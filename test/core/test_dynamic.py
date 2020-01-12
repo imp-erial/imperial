@@ -1,5 +1,6 @@
 import unittest
 
+from imperial import exceptions
 from imperial.core import base, dynamic, key
 
 class Int(base.ImperialType):
@@ -56,3 +57,10 @@ class TestAdder(unittest.TestCase):
 		self.assertEqual(t.get("a"), 1)
 		self.assertEqual(t.get("b"), 8)
 		self.assertEqual(t.get(), 9)
+
+	def test_get_unset_basic_no_b(self):
+		t = Adder()
+		t.set("a", 1)
+
+		with self.assertRaises(exceptions.ImperialKeyError):
+			t.get()

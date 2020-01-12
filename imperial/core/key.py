@@ -2,6 +2,7 @@ from typing import Any, Callable, ClassVar, List, Optional, overload, Set, Tuple
 
 from .base import ImperialType, EitherValue
 from ..magic import add_help, make_refs_only_resolver
+from ..exceptions import ImperialKeyError, ImperialSanityError
 
 class KeyMeta(type):
 	def __new__(cls, name, bases, dct):
@@ -38,7 +39,14 @@ class Key(metaclass=KeyMeta):
 	_data: ImperialType = None
 	defaulted: bool = False
 
-	def __init__(self, data=None, *, container=None):
+	def __init__(
+		self,
+		data=None,
+		*,
+		name: str = "",
+		container: Optional[ImperialType] = None
+	):
+		self.name = name or self.keyname
 		self.container = container
 
 		if data is not None:
@@ -50,6 +58,8 @@ class Key(metaclass=KeyMeta):
 			if self._calculations:
 				self.run_calculations(self.container)
 			if self._data is None:
+				if self.default is None:
+					raise ImperialKeyError(self.name)
 				self._data = self.type(self.default)
 				self.defaulted = True
 		return self._data
@@ -86,7 +96,11 @@ class Key(metaclass=KeyMeta):
 			if any(self._data != x for x in iterator):
 				raise ImperialSanityError()
 		else:
-			res = next(iterator)
+			try:
+				res = next(iterator)
+			except StopIteration:
+				return
+
 			first_value = self.normalize(res)
 			base = self.type(first_value)
 			if any(base != x for x in iterator):

@@ -4,6 +4,7 @@ from collections import defaultdict, OrderedDict
 from .key import Key
 from .base import ImperialType, KeyMap, EitherValue
 from ..util import DotMap
+from ..exceptions import ImperialKeyError
 
 
 class DynamicKeyMap(KeyMap):
@@ -24,13 +25,12 @@ class DynamicKeyMap(KeyMap):
 		if name in self:
 			return super().__getitem__(name)
 
-		key = self._owner.key_type(name)
 		inherited = self.find_inherited(name)
 		if inherited is not None:
 			ref = Reference(to=inherited)
-			ret = self[name] = key(ref, container=self._owner)
+			ret = self[name] = self._owner._make_key(name, ref)
 		else:
-			ret = self[name] = key(container=self._owner)
+			ret = self[name] = self._owner._make_key(name)
 		return ret
 
 	def __setitem__(self, key: str, value: Key):
@@ -38,7 +38,8 @@ class DynamicKeyMap(KeyMap):
 		if isinstance(value, t):
 			super().__setitem__(key, value)
 		# elif issubclass(t, type(value)):
-		# 	super().__setitem__(key, t(value, container=self._owner))
+		# 	k = self._owner._make_key(name, value)
+		# 	super().__setitem__(key, k)
 		else:
 			raise ValueError(value)
 
@@ -194,6 +195,9 @@ class Dynamic(ImperialType):
 		if name in self._keys:
 			return self._keys[name]
 		raise ImperialKeyError(name)
+
+	def _make_key(self, name: str, data=None) -> Key:
+		return self.key_type(name)(data, name=name, container=self)
 	
 	def localize_key(self, name: str) -> List[str]:
 		"""
@@ -218,7 +222,7 @@ class Dynamic(ImperialType):
 		if name in self.keys:
 			self.keys[name].run_calculations(self)
 		else:
-			key = self.keys[name] = self.key_type(name)(container=self)
+			key = self.keys[name] = self._make_key(name)
 			key.run_calculations(self)
 
 	@classmethod
@@ -227,7 +231,7 @@ class Dynamic(ImperialType):
 
 	def set_by_key(self, name: str, value: EitherValue):
 		# TODO: assert when frozen
-		key = self.key_type(name)(container=self)
+		key = self._make_key(name)
 		key.data = key.type(value)
 		self.keys[name] = key
 	
