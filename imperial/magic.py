@@ -3,6 +3,7 @@ from typing import Callable, Dict, Set, Tuple, Union
 
 from .cache import Cache
 from .core.base import ImperialType
+from .exceptions import ImperialLibraryError
 
 def add_help(to: Union[Callable, type], source: Union[Callable, type]):
 	to.__name__ = source.__name__

@@ -2,6 +2,8 @@ from copy import deepcopy
 from typing import Callable, ClassVar, Dict, List, Optional, overload, Sequence, Union
 from collections import OrderedDict
 
+from ..exceptions import ImperialKeyError
+
 PythonValue = Union[int, str, list]
 EitherValue = Union[PythonValue, "ImperialType"]
 
@@ -358,7 +360,7 @@ class ImperialType(metaclass=Meta):
 		raise NotImplementedError(t)
 
 	def __getattr__(self, name: str):
-		if attr in self.propagated_methods:
+		if name in self.propagated_methods:
 			self.propagated_methods[name]
 		raise AttributeError(name)
 
