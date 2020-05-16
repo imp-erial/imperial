@@ -2,7 +2,7 @@ from typing import Callable, ClassVar, Dict, Iterator, List, Optional, Sequence,
 from collections import defaultdict, OrderedDict
 
 from .key import Key
-from .base import ImperialType, KeyMap, EitherValue
+from .base import ImperialType, KeyMap, EitherValue, PythonValue
 from ..util import DotMap
 from ..exceptions import ImperialKeyError
 
@@ -15,11 +15,6 @@ class DynamicKeyMap(KeyMap):
 	Keys may be inherited, have default values, or come from
 	the result of calculations composed of other, defined keys.
 	"""
-	_owner: Optional["Dynamic"]
-
-	def __init__(self, *args, owner: Optional["Dynamic"] = None):
-		super().__init__(*args)
-		self._owner = owner
 
 	def __getitem__(self, name: str) -> Key:
 		if name in self:
@@ -194,7 +189,7 @@ class Dynamic(ImperialType):
 				return self.context.locators[name]
 		if name in self._keys:
 			return self._keys[name]
-		raise ImperialKeyError(name)
+		raise ImperialKeyError(f"{name} of {self}")
 
 	def _make_key(self, name: str, data=None) -> Key:
 		return self.key_type(name)(data, name=name, container=self)
@@ -226,14 +221,15 @@ class Dynamic(ImperialType):
 			key.run_calculations(self)
 
 	@classmethod
-	def normalize(cls, value) -> ImperialType:
+	def normalize(cls, value: EitherValue) -> PythonValue:
+		"""
+		Unify multiple possible basic values into a single basic
+		value or a dict of keys.
+		"""
 		raise NotImplementedError(f"{cls.__name__} must implement normalize")
 
 	def set_by_key(self, name: str, value: EitherValue):
-		# TODO: assert when frozen
-		key = self._make_key(name)
-		key.data = key.type(value)
-		self.keys[name] = key
+		self.keys[name].set(value)
 	
 	def containers(self) -> Iterator[ImperialType]:
 		container = self.container

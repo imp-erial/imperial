@@ -1,9 +1,11 @@
 import inspect
-from typing import Callable, Dict, Set, Tuple, Union
+from typing import Callable, Dict, Optional, Set, Tuple, Union, TYPE_CHECKING
 
 from .cache import Cache
-from .core.base import ImperialType
 from .exceptions import ImperialLibraryError
+
+if TYPE_CHECKING:
+	from .core.base import ImperialType
 
 def add_help(to: Union[Callable, type], source: Union[Callable, type]):
 	to.__name__ = source.__name__
@@ -29,59 +31,116 @@ def make_refs_only_resolver(fun: Callable, positional: Tuple[str] = ()) -> "Refe
 		keys[key] = key
 	return ReferenceHandler(fun, keys)
 
-class ReferenceHandler:
-	_has_run = False
-	_other: ImperialType
+def parse_special_ref(obj: "ImperialType", ref: str) -> Tuple["ImperialType", Optional[str], Optional[str]]:
+	key: Optional[str] = None
+	special: Optional[str] = None
+	if "." in ref:
+		relative, key = ref.split(".", 1)
+	elif "!" in ref:
+		relative, special = ref.split("!", 1)
 
+	if relative == "parent":
+		obj = obj.parent
+	# TODO: previous/next/more?
+	elif relative not in ["", "this"]:
+		raise ImperialLibraryError(f"No relation called {relative}")
+
+	return obj, key, special
+
+def resolve_special_ref(obj: "ImperialType", ref: str) -> Optional["ImperialType"]:
+	obj, key, special = parse_special_ref(obj, ref)
+
+	if obj is None:
+		return None
+
+	if key:
+		return obj.resolve_by_key(key)
+
+	if special:
+		if special == "children":
+			if obj.has_children():
+				return obj.children()
+			else:
+				return None
+		elif special == "basic":
+			return obj.resolve_basic()
+		else:
+			raise ImperialLibraryError(f"Unknown internal reference {key}")
+
+	return obj
+
+def has_special_ref(obj: "ImperialType", ref: str, quick: bool) -> bool:
+	obj, key, special = parse_special_ref(obj, ref)
+
+	if obj is None:
+		return False
+
+	if key:
+		return obj.keys.contains_quick(key) if quick else key in obj.keys
+
+	if special:
+		if special == "children":
+			return obj.has_children()
+		elif special == "basic":
+			# TODO: check if struct supports a basic
+			return True
+		else:
+			raise ImperialLibraryError(f"Unknown internal reference {key}")
+
+	return True
+
+class ReferenceHandler:
 	_fun: Callable
 	_keys: Dict[str, str]
-	_cache: Cache
+	_refs: Set[str]
 
 	def __init__(self, fun: Callable, keys: Dict[str, str]):
 		self._fun = fun
 		self._keys = keys
-		self._cache = Cache()
+		self._refs = set(keys.keys())
 
-	def __call__(self, other: ImperialType):
-		if self._has_run:
-			if other is not self._other:
-				raise ImperialLibraryError(
-					f"{self.__class__.__name__} must only be used for a single struct")
-		else:
-			for key in self._keys.keys():
-				other.add_link(key, invalidates=self._cache)
-			self._has_run = True
-			self._other = other
-		return self
+	def __call__(self, instance: "ImperialType"):
+		name = self._fun.__name__
+		if name in instance._ref_handlers:
+			return instance._ref_handlers[name]
+		ret = instance._ref_handlers[name] = BoundReferenceHandler(self, instance)
+		return ret
+
+	def add_to(self, handler):
+		handler._refs = self._refs
+
+class BoundReferenceHandler:
+	_fun: Callable
+	_keys: Dict[str, str]
+	_refs: Set[str]
+	_cache: Cache
+	_instance: "ImperialType"
+
+	def __init__(self, base: ReferenceHandler, instance: "ImperialType"):
+		self._fun = base._fun
+		self._keys = base._keys
+		self._refs = base._refs
+
+		self._cache = Cache()
+		self._instance = instance
+
+		for key in self._keys.keys():
+			instance.add_link(key, invalidates=self._cache)
 
 	def run(self, *args, **kwargs):
 		if self._cache.is_valid:
 			return self._cache.value
 		keyargs = {}
-		other = self._other
+		instance = self._instance
 		for origin, kwarg in self._keys.items():
-			if origin.startswith("!"):
-				if origin == "!children":
-					if other.has_children():
-						keyargs[kwarg] = other.children()
-					else:
-						return None
-				elif origin == "!basic":
-					keyargs[kwarg] = other.resolve_basic()
-				else:
-					raise ImperialLibraryError(f"Unknown internal reference {key}")
-			elif origin in other.keys:
+			if "." in origin or "!" in origin:
+				# Using relative referencing
+				keyargs[kwarg] = resolve_special_ref(instance, origin)
+			elif origin in instance.keys:
 				# TODO: use link map to make this safer?
-				keyargs[kwarg] = other.keys[origin].resolve()
+				keyargs[kwarg] = instance.keys[origin].resolve()
 			else:
 				return None
-		ret = self._fun(self._other, *args, **kwargs, **keyargs)
+		ret = self._fun(instance, *args, **kwargs, **keyargs)
 		self._cache.cache(ret)
 		return ret
-	
-	def keys(self) -> Set[str]:
-		return set(self._keys.keys())
-
-	def add_to(self, handler):
-		handler._refs = self.keys()
-		handler._cache = self._cache

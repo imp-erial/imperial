@@ -6,6 +6,8 @@ from imperial.core import base, dynamic, key
 class Int(base.ImperialType):
 	@classmethod
 	def normalize(cls, value):
+		if isinstance(value, Int):
+			return value._data
 		return int(value)
 
 	def get_basic(self):
