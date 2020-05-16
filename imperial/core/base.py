@@ -2,9 +2,10 @@ from copy import deepcopy
 from typing import Callable, ClassVar, Dict, List, Optional, overload, Sequence, Union
 from collections import OrderedDict
 
+from ..magic import has_special_ref, BoundReferenceHandler
 from ..exceptions import ImperialKeyError
 
-PythonValue = Union[int, str, list]
+PythonValue = Union[int, str, list, float, bool, bytes, tuple]
 EitherValue = Union[PythonValue, "ImperialType"]
 
 class KeyMap(OrderedDict):
@@ -12,6 +13,12 @@ class KeyMap(OrderedDict):
 	Storage system for keys and values in a struct.
 	Provides access to key data as well as methods to query the information.
 	"""
+	_owner: "ImperialType"
+
+	def __init__(self, *args, owner: "ImperialType"):
+		super().__init__(*args)
+		self._owner = owner
+
 	def contains(self, name: str, memo: Dict[str, bool]) -> bool:
 		if name in memo:
 			return memo[name]
@@ -24,19 +31,34 @@ class KeyMap(OrderedDict):
 			return self.special_ref_exists_quick(name)
 		return super().__contains__(name)
 
-	def is_special_ref(self, ref: str) -> bool:
+	__contains__ = contains_quick
+
+	@staticmethod
+	def is_special_ref(ref: str) -> bool:
 		"""
 		Special refs are references to things that are either
 		not normally able to be referenced or locations that
 		are relative to this location, such as siblings or parents.
 		"""
-		return name.startswith("!") or "." in name
+		return "." in ref or "!" in ref
 
 	def special_ref_exists(self, ref: str, memo: Dict[str, bool]) -> bool:
-		pass
+		if ref in memo:
+			return memo[ref]
+
+		ret = memo[key] = has_special_ref(self._owner, ref, False)
+		return ret
 
 	def special_ref_exists_quick(self, ref: str) -> bool:
-		pass
+		return has_special_ref(self._owner, ref, True)
+
+	def __deepcopy__(self, memo):
+		ret = type(self)(owner=None)
+		memo[id(self)] = ret
+		for key, value in self.items():
+			OrderedDict.__setitem__(ret, key, deepcopy(value, memo))
+
+		return ret
 
 
 class Meta(type):
@@ -65,7 +87,8 @@ class ImperialType(metaclass=Meta):
 	donor: "ImperialType"
 	clones: List["ImperialType"]
 
-	frozen: bool
+	# For magic key stuff
+	_ref_handlers: Dict[str, BoundReferenceHandler]
 
 	def __init__(self,
 		data=None,
@@ -90,13 +113,13 @@ class ImperialType(metaclass=Meta):
 		self.context = context
 		self.container = container
 
-		self.keys = KeyMap()
+		self.keys = KeyMap(owner=self)
 		self.children = OrderedDict()
 
 		self.donor = donor
 		self.clones = []
 
-		self.frozen = False
+		self._ref_handlers = {}
 
 		if data is not None:
 			self.set(data)
@@ -148,7 +171,10 @@ class ImperialType(metaclass=Meta):
 			if attr in self.nocopy:
 				setattr(ret, attr, value)
 			else:
-				setattr(ret, attr, deepcopy(value, memo))
+				v = deepcopy(value, memo)
+				if isinstance(v, KeyMap):
+					v._owner = self
+				setattr(ret, attr, v)
 
 		return ret
 
@@ -217,7 +243,7 @@ class ImperialType(metaclass=Meta):
 				if len(names) == 1:
 					names = names[0]
 				elif names:
-					self.resolve(names[:-1]).set_key(names[-1], value)
+					self.resolve(names[:-1]).set_by_key(names[-1], value)
 					return
 			if names:
 				self.set_by_key(names, value)
@@ -277,7 +303,7 @@ class ImperialType(metaclass=Meta):
 		the value of a single key.
 		Typically will not need to be overridden.
 		"""
-		self.keys[name] = ImperialType.normalize(value)
+		self.keys[name] = self.normalize(value)
 
 	def set_basic(self, value: EitherValue):
 		"""
@@ -342,7 +368,7 @@ class ImperialType(metaclass=Meta):
 		raise NotImplementedError("TODO: set_source")
 
 	@classmethod
-	def normalize(cls, value) -> "ImperialType":
+	def imperialize(cls, value) -> "ImperialType":
 		if isinstance(value, ImperialType):
 			return value
 		elif isinstance(value, int):
