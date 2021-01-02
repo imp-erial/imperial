@@ -1,15 +1,35 @@
 import inspect
 from typing import Callable, Dict, Optional, Set, Tuple, Union, TYPE_CHECKING
+from operator import attrgetter
 
 from .cache import Cache
+from .linkmap import LinkNode
 from .exceptions import ImperialLibraryError
 
 if TYPE_CHECKING:
 	from .core.base import ImperialType
 
+
+class SpecialRef:
+	def __init__(self, name: str, getter: Optional[Callable] = None):
+		self.name = name
+		self.getter = getter
+
+	def __repr__(self):
+		return f"SpecialRef('{name}')"
+
+
+NAME = SpecialRef("name", attrgetter("name"))
+BASIC = SpecialRef("basic", lambda x: x.caches["basic"])
+PACKED = SpecialRef("packed", lambda x: x.caches["packed"])
+
+REF = Union[str, SpecialRef]
+
+
 def add_help(to: Union[Callable, type], source: Union[Callable, type]):
 	to.__name__ = source.__name__
 	to.__doc__ = source.__doc__
+
 
 def make_refs_resolver(fun: Callable) -> "ReferenceHandler":
 	"""
@@ -19,7 +39,8 @@ def make_refs_resolver(fun: Callable) -> "ReferenceHandler":
 	keys = {key: key for key in inspect.getfullargspec(fun).kwonlyargs}
 	return ReferenceHandler(fun, keys)
 
-def make_refs_only_resolver(fun: Callable, positional: Tuple[str] = ()) -> "ReferenceHandler":
+
+def make_refs_only_resolver(fun: Callable, positional: Tuple[REF] = ()) -> "ReferenceHandler":
 	"""
 	Transform all arguments into requests for
 	keys by name. Sets up cache links, too.
@@ -31,70 +52,13 @@ def make_refs_only_resolver(fun: Callable, positional: Tuple[str] = ()) -> "Refe
 		keys[key] = key
 	return ReferenceHandler(fun, keys)
 
-def parse_special_ref(obj: "ImperialType", ref: str) -> Tuple["ImperialType", Optional[str], Optional[str]]:
-	key: Optional[str] = None
-	special: Optional[str] = None
-	if "." in ref:
-		relative, key = ref.split(".", 1)
-	elif "!" in ref:
-		relative, special = ref.split("!", 1)
-
-	if relative == "parent":
-		obj = obj.parent
-	# TODO: previous/next/more?
-	elif relative not in ["", "this"]:
-		raise ImperialLibraryError(f"No relation called {relative}")
-
-	return obj, key, special
-
-def resolve_special_ref(obj: "ImperialType", ref: str) -> Optional["ImperialType"]:
-	obj, key, special = parse_special_ref(obj, ref)
-
-	if obj is None:
-		return None
-
-	if key:
-		return obj.resolve_by_key(key)
-
-	if special:
-		if special == "children":
-			if obj.has_children():
-				return obj.children()
-			else:
-				return None
-		elif special == "basic":
-			return obj.resolve_basic()
-		else:
-			raise ImperialLibraryError(f"Unknown internal reference {key}")
-
-	return obj
-
-def has_special_ref(obj: "ImperialType", ref: str, quick: bool) -> bool:
-	obj, key, special = parse_special_ref(obj, ref)
-
-	if obj is None:
-		return False
-
-	if key:
-		return obj.keys.contains_quick(key) if quick else key in obj.keys
-
-	if special:
-		if special == "children":
-			return obj.has_children()
-		elif special == "basic":
-			# TODO: check if struct supports a basic
-			return True
-		else:
-			raise ImperialLibraryError(f"Unknown internal reference {key}")
-
-	return True
 
 class ReferenceHandler:
 	_fun: Callable
-	_keys: Dict[str, str]
-	_refs: Set[str]
+	_keys: Dict[REF, str]
+	_refs: Set[REF]
 
-	def __init__(self, fun: Callable, keys: Dict[str, str]):
+	def __init__(self, fun: Callable, keys: Dict[REF, str]):
 		self._fun = fun
 		self._keys = keys
 		self._refs = set(keys.keys())
@@ -109,10 +73,11 @@ class ReferenceHandler:
 	def add_to(self, handler):
 		handler._refs = self._refs
 
+
 class BoundReferenceHandler:
 	_fun: Callable
-	_keys: Dict[str, str]
-	_refs: Set[str]
+	_keys: Dict[REF, str]
+	_refs: Set[REF]
 	_cache: Cache
 	_instance: "ImperialType"
 
@@ -133,9 +98,9 @@ class BoundReferenceHandler:
 		keyargs = {}
 		instance = self._instance
 		for origin, kwarg in self._keys.items():
-			if "." in origin or "!" in origin:
-				# Using relative referencing
-				keyargs[kwarg] = resolve_special_ref(instance, origin)
+			if isinstance(origin, SpecialRef):
+				# Referencing something of the struct that's not a key
+				keyargs[kwarg] = origin.getter(instance).value
 			elif origin in instance.keys:
 				# TODO: use link map to make this safer?
 				keyargs[kwarg] = instance.keys[origin].resolve()

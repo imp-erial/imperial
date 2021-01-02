@@ -15,17 +15,11 @@ class DynamicKeyMap(KeyMap):
 	Keys may be inherited, have default values, or come from
 	the result of calculations composed of other, defined keys.
 	"""
-
 	def __getitem__(self, name: str) -> Key:
 		if name in self:
 			return super().__getitem__(name)
 
-		inherited = self.find_inherited(name)
-		if inherited is not None:
-			ref = Reference(to=inherited)
-			ret = self[name] = self._owner._make_key(name, ref)
-		else:
-			ret = self[name] = self._owner._make_key(name)
+		ret = self[name] = self._owner._make_key(name)
 		return ret
 
 	def __setitem__(self, key: str, value: Key):
@@ -42,54 +36,8 @@ class DynamicKeyMap(KeyMap):
 		# TODO: works
 		if super().__contains__(name):
 			return True
-		return self.find_inherited(name) is not None
+		return self._owner.find_inherited(name) is not None
 
-	def contains(self, name: str, memo: Dict[str, bool]) -> bool:
-		"""
-		If you requested self[name], would it return a value?
-		"""
-		# TODO: cache result
-		if name in memo:
-			return memo[name]
-		
-		memo[name] = None
-		
-		if self.is_special_ref(name):
-			ret = memo[name] = self.special_ref_exists(name)
-			return ret
-
-		if super().__contains__(name) or self.find_inherited(name) is not None:
-			return True
-		
-		kt = self._owner.key_type(name)
-		rems: List[set] = []
-		for refs in kt._calc_links:
-			r = {ref for ref in refs if not self.contains_quick(ref)}
-			if r:
-				rems.append(r)
-			else:
-				return True
-		
-		rems.sort(key=len)
-
-		for refs in rems:
-			if all(self.contains(name, memo) for ref in refs):
-				return True
-		return False
-	
-	def find_inherited(self, name: str) -> Key:
-		# TODO: do we want to consider calculated values of parents?
-		aliases = self._owner.localize_key(name)
-		for parent in self._owner.containers():
-			for n in aliases:
-				if isinstance(parent, Dynamic):
-					n = parent.key_name_from_localization(n)
-				if n in parent.keys:
-					key = parent.keys[n]
-					if not key.hidden and not key.defaulted:
-						return key
-		return None
-		
 
 class Dynamic(ImperialType):
 	"""
@@ -98,7 +46,7 @@ class Dynamic(ImperialType):
 	definition. Typically, the data is retrieved from an
 	external source, but it may also be algorithmic, for example.
 
-	In a dynamic struct, keys are implicitely typed, may have
+	In a dynamic struct, keys are implicitly typed, may have
 	defaults, can inherit their values from parent structs, and
 	can have their values calculated from other, defined keys.
 
@@ -120,10 +68,10 @@ class Dynamic(ImperialType):
 		super().__init__(**kwargs)
 		self._register()
 		self.keys = DynamicKeyMap(owner=self)
-		
+
 		if data is not None:
 			self.set(data)
-		
+
 		self.add_children(children)
 
 	@classmethod
@@ -141,7 +89,7 @@ class Dynamic(ImperialType):
 			cls._keys[key.keyname] = key
 		setattr(cls, key.__name__, key)
 		return key
-	
+
 	@classmethod
 	def register_locator(cls, key: Type[Key]) -> Type[Key]:
 		"""
@@ -173,8 +121,9 @@ class Dynamic(ImperialType):
 				cls._overrides = defaultdict(dict)
 			cls._overrides[context][key.keyname] = key
 			return key
+
 		return registrar
-	
+
 	def key_type(self, name: str) -> Type[Key]:
 		"""
 		Get a key's class from its name.
@@ -193,32 +142,33 @@ class Dynamic(ImperialType):
 
 	def _make_key(self, name: str, data=None) -> Key:
 		return self.key_type(name)(data, name=name, container=self)
-	
+
 	def localize_key(self, name: str) -> List[str]:
 		"""
 		Get all localizations of a key name.
 		"""
 		# TODO: this
 		return [name]
-	
+
 	def key_name_from_localization(self, name: str) -> str:
 		"""
 		Retrieve the internal name of a key from a localized name.
 		"""
 		# TODO: this
 		return name
-	
-	def run_calculations(self, name: str):
+
+	def check_constraints(self, name: Optional[str] = None):
 		"""
 		Run all registered calculations and assert that they have
 		the same result. If the key was unset, set it.
 		Raises ImperialSanityError if they do not.
 		"""
-		if name in self.keys:
-			self.keys[name].run_calculations(self)
-		else:
-			key = self.keys[name] = self._make_key(name)
-			key.run_calculations(self)
+		if name is None:
+			for name in self.keys:
+				self.check_constraints(name)
+			return
+
+		self.keys[name].check_constraints()
 
 	@classmethod
 	def normalize(cls, value: EitherValue) -> PythonValue:
@@ -230,19 +180,33 @@ class Dynamic(ImperialType):
 
 	def set_by_key(self, name: str, value: EitherValue):
 		self.keys[name].set(value)
-	
+
 	def containers(self) -> Iterator[ImperialType]:
 		container = self.container
 		while container is not None:
 			yield container
 			container = container.container
-	
+
 	def parents(self) -> Iterator[ImperialType]:
 		parent = self.parent
 		while parent is not None:
 			yield parent
 			parent = parent.parent
-	
-	def add_link(self, key: str, *, invalidates=None):
-		if invalidates is not None:
-			pass  # TODO
+
+	def add_link(self, key: str, *, invalidates):
+		pass  # TODO
+
+	def add_links(self, keys: Sequence[str], *, invalidates):
+		pass  # TODO
+
+	def find_inherited(self, name: str) -> Key:
+		aliases = self.localize_key(name)
+		for container in self.containers():
+			for n in aliases:
+				if isinstance(container, Dynamic):
+					n = container.key_name_from_localization(n)
+				if n in container.keys:
+					key = container.keys[n]
+					if not key.hidden and not key.defaulted:
+						return key
+		return None

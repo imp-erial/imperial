@@ -2,6 +2,7 @@ from collections import defaultdict
 
 from .base import Meta
 from .dynamic import Dynamic
+from ..magic import SpecialRef, PACKED
 
 
 class PackableMeta(Meta):
@@ -25,3 +26,8 @@ class PackableMeta(Meta):
 
 class Packable(Dynamic, metaclass=PackableMeta):
 	_pack_links = {}
+
+	def has_special_ref(self, ref: SpecialRef) -> bool:
+		if ref is PACKED:
+			return True
+		return super().has_special_ref(ref)

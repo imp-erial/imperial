@@ -3,6 +3,8 @@ import unittest
 from imperial import exceptions
 from imperial.core import key, serializable
 from imperial.util import BytesBuffer, RawBytesIO
+from imperial.magic import BASIC
+
 
 class PosInt(serializable.Serializable):
 	@classmethod
@@ -27,7 +29,7 @@ class PosInt(serializable.Serializable):
 
 	def get_basic(self):
 		return self._data
-	
+
 	def set_basic(self, value):
 		self._data = self.normalize(value)
 
@@ -48,7 +50,7 @@ class Size(PosInt):
 			type = PosInt
 			keyname = "bits"
 
-			@key.calculate("!basic")
+			@key.calculate(BASIC)
 			def from_basic(self, basic):
 				return basic.get() * 8
 
@@ -108,7 +110,7 @@ class TestSerializable(unittest.TestCase):
 		pair = Pair()
 		pair.unserialize(b"\x01\x00\x02\x00", {"left"})
 		self.assertEqual(pair.get("left"), 1)
-		self.assertFalse(pair.keys.contains_quick("right"))
+		self.assertFalse("right" in dict(pair.keys))
 
 		pair.unserialize()
 		self.assertEqual(pair.get("right"), 2)

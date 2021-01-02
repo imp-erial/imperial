@@ -1,56 +1,27 @@
+from __future__ import annotations
+
 from copy import deepcopy
 from typing import Callable, ClassVar, Dict, List, Optional, overload, Sequence, Union
 from collections import OrderedDict
 
-from ..magic import has_special_ref, BoundReferenceHandler
+from ..magic import BoundReferenceHandler, SpecialRef, NAME, BASIC
+from ..linkmap import LinkNode, StringLinkNode, LinkMap
 from ..exceptions import ImperialKeyError
 
 PythonValue = Union[int, str, list, float, bool, bytes, tuple]
 EitherValue = Union[PythonValue, "ImperialType"]
+
 
 class KeyMap(OrderedDict):
 	"""
 	Storage system for keys and values in a struct.
 	Provides access to key data as well as methods to query the information.
 	"""
-	_owner: "ImperialType"
+	_owner: ImperialType
 
-	def __init__(self, *args, owner: "ImperialType"):
+	def __init__(self, *args, owner: ImperialType):
 		super().__init__(*args)
 		self._owner = owner
-
-	def contains(self, name: str, memo: Dict[str, bool]) -> bool:
-		if name in memo:
-			return memo[name]
-
-		ret = memo[key] = self.contains_quick(name)
-		return ret
-
-	def contains_quick(self, name: str) -> bool:
-		if self.is_special_ref(name):
-			return self.special_ref_exists_quick(name)
-		return super().__contains__(name)
-
-	__contains__ = contains_quick
-
-	@staticmethod
-	def is_special_ref(ref: str) -> bool:
-		"""
-		Special refs are references to things that are either
-		not normally able to be referenced or locations that
-		are relative to this location, such as siblings or parents.
-		"""
-		return "." in ref or "!" in ref
-
-	def special_ref_exists(self, ref: str, memo: Dict[str, bool]) -> bool:
-		if ref in memo:
-			return memo[ref]
-
-		ret = memo[key] = has_special_ref(self._owner, ref, False)
-		return ret
-
-	def special_ref_exists_quick(self, ref: str) -> bool:
-		return has_special_ref(self._owner, ref, True)
 
 	def __deepcopy__(self, memo):
 		ret = type(self)(owner=None)
@@ -73,34 +44,40 @@ class Meta(type):
 
 
 class ImperialType(metaclass=Meta):
-	nocopy: ClassVar[List[str]] = ["clones", "parent", "container", "donor"]
+	nocopy: ClassVar[List[str]] = ["clones", "parent", "container", "donor", "linkmap", "caches"]
 	propagated_methods: ClassVar[Dict[str, Callable]] = {}
 
-	name: Optional[str]
-	parent: Optional["ImperialType"]
-	context: Optional["ImperialType"]
-	container: Optional["ImperialType"]
+	name: LinkNode
+	link_prefix: str
+
+	parent: Optional[ImperialType]
+	context: Optional[ImperialType]
+	container: Optional[ImperialType]
 
 	keys: KeyMap
-	children: Dict[str, "ImperialType"]
+	children: Dict[str, ImperialType]
 
-	donor: "ImperialType"
-	clones: List["ImperialType"]
+	donor: ImperialType
+	clones: List[ImperialType]
 
 	# For magic key stuff
 	_ref_handlers: Dict[str, BoundReferenceHandler]
 
-	def __init__(self,
+	linkmap: LinkMap
+	caches: Dict[str, LinkNode]
+
+	def __init__(
+		self,
 		data=None,
 		*,
 		name: Optional[str] = None,
 		source=None,  # TODO: type
-		children: Sequence["ImperialType"] = (),
+		children: Sequence[ImperialType] = (),
 		hidden: bool = False,
-		parent: Optional["ImperialType"] = None,
-		context: Optional["ImperialType"] = None,
-		container: Optional["ImperialType"] = None,
-		donor: Optional["ImperialType"] = None
+		parent: Optional[ImperialType] = None,
+		context: Optional[ImperialType] = None,
+		container: Optional[ImperialType] = None,
+		donor: Optional[ImperialType] = None
 	):
 		"""
 		parent: What @parent should point to.
@@ -108,7 +85,6 @@ class ImperialType(metaclass=Meta):
 		container: What this should inherit keys from first.
 		donor: What this was cloned from.
 		"""
-		self.name = name
 		self.parent = parent
 		self.context = context
 		self.container = container
@@ -121,6 +97,16 @@ class ImperialType(metaclass=Meta):
 
 		self._ref_handlers = {}
 
+		n = name or str(id(self))
+		lp = self.link_prefix = n if parent is None else parent.link_prefix + "{%s}" % (n, )
+		lm = self.linkmap = LinkMap() if parent is None else self.root.linkmap
+		self.caches = {}
+
+		lm[f"{lp}/name"] = self.name = StringLinkNode(name, rigid=True)
+		lm[f"{lp}/basic"] = self.caches["basic"] = LinkNode(refresh=self.resolve_basic)
+
+		self.post_init()
+
 		if data is not None:
 			self.set(data)
 
@@ -128,6 +114,12 @@ class ImperialType(metaclass=Meta):
 			self.set_source(source)
 
 		self.add_children(children)
+
+	def post_init(self):
+		"""
+		Override this to hook into __init__ after setup before data assignment.
+		"""
+		pass
 
 	def __call__(self, data=None, **kwargs):
 		"""
@@ -142,12 +134,14 @@ class ImperialType(metaclass=Meta):
 		if data is not None:
 			new.set(data)
 
-		for kw in (
-			"name", "source", "children", "hidden",
-			"parent", "container", "donor"
-		):
+		for kw in ("source", "children", "hidden", "parent", "container", "donor"):
 			if kw in kwargs:
 				setattr(new, kw, kwargs[kw])
+
+		if "name" in kwargs:
+			n = name or str(id(self))
+			new.link_prefix = n if parent is None else parent.link_prefix + "{%s}" % (n, )
+			new.name = StringLinkNode(new.link_prefix + "/name", name)
 
 		return new
 
@@ -177,6 +171,12 @@ class ImperialType(metaclass=Meta):
 				setattr(ret, attr, v)
 
 		return ret
+
+	@property
+	def root(self) -> ImperialType:
+		if self.parent is None:
+			return self
+		return self.parent.root
 
 	def get(self, names: Union[None, str, Sequence[str]] = None) -> PythonValue:
 		"""
@@ -256,7 +256,7 @@ class ImperialType(metaclass=Meta):
 			else:
 				self.set_basic(value)
 
-	def resolve(self, names: Union[None, str, Sequence[str]] = None) -> "ImperialType":
+	def resolve(self, names: Union[None, str, Sequence[str]] = None) -> ImperialType:
 		"""
 		Get the ImperialType value of a key.
 
@@ -315,7 +315,7 @@ class ImperialType(metaclass=Meta):
 		for key, value in values.items():
 			self.set(key, value)
 
-	def resolve_by_key(self, name: str) -> "ImperialType":
+	def resolve_by_key(self, name: str) -> ImperialType:
 		"""
 		Override this to change the behavior of retrieving
 		the ImperialType value of a single key.
@@ -323,7 +323,7 @@ class ImperialType(metaclass=Meta):
 		"""
 		return self.key(name).data.resolve_basic()
 
-	def resolve_basic(self) -> "ImperialType":
+	def resolve_basic(self) -> ImperialType:
 		"""
 		Only Reference really needs to override this.
 		Typically will not need to be overridden.
@@ -347,17 +347,30 @@ class ImperialType(metaclass=Meta):
 
 	def has_keys(self, keys: Sequence[str]) -> bool:
 		for key in keys:
-			if key not in self.keys:
+			if isinstance(key, SpecialRef):
+				if not self.has_special_ref(key):
+					return False
+			elif key not in self.keys:
 				return False
 		return True
 
-	def add_child(self, child: "ImperialType"):
+	def has_special_ref(self, ref: SpecialRef) -> bool:
+		if ref is NAME:
+			if self.name:
+				return True
+		elif ref is BASIC:
+			# TODO: actually check
+			return True
+		# If it's not known by us it's not here
+		return False
+
+	def add_child(self, child: ImperialType):
 		"""
 		Override this in order to support having substructs.
 		"""
 		raise NotImplementedError(f"{self.__class__.__name__} must implement add_child")
 
-	def add_children(self, children: Sequence["ImperialType"]):
+	def add_children(self, children: Sequence[ImperialType]):
 		"""
 		Add multiple substructs at one time.
 		"""
@@ -368,7 +381,7 @@ class ImperialType(metaclass=Meta):
 		raise NotImplementedError("TODO: set_source")
 
 	@classmethod
-	def imperialize(cls, value) -> "ImperialType":
+	def imperialize(cls, value) -> ImperialType:
 		if isinstance(value, ImperialType):
 			return value
 		elif isinstance(value, int):

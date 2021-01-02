@@ -3,9 +3,12 @@ from typing import Any, Iterator, Optional, Set, Tuple, Union
 from .packable import Packable
 from ..util import BytesBuffer
 from ..magic import make_refs_resolver
+from ..linkmap import BigBlobLinkNode
+
 
 def serialize(fun):
 	resolver = make_refs_resolver(fun)
+
 	def handler(self: "Serializable", *args: BytesBuffer) -> Optional[bytes]:
 		"""
 		Serialize this struct into a bytes sequence.
@@ -19,12 +22,15 @@ def serialize(fun):
 			blob.seek(0)
 			return blob.readall()
 		raise TypeError(f"serialize() takes from 0 to 1 positional arguments but {len(args)} were given")
+
 	resolver.add_to(handler)
 	handler._pack = ("Serializable", 0)
 	return handler
 
+
 def unserialize(fun):
 	resolver = make_refs_resolver(fun)
+
 	def handler(self: "Serializable", blob: Union[bytes, BytesBuffer] = b"", until: Set[str] = {""}):
 		"""
 		Unserialize this struct from a bytes sequence.
@@ -37,9 +43,11 @@ def unserialize(fun):
 		value = resolver(self).run(blob)
 		self.set(value)
 		return self
+
 	resolver.add_to(handler)
 	handler._pack = ("Serializable", 1)
 	return handler
+
 
 def unserialize_yield(fun):
 	last_blob: BytesBuffer
@@ -47,6 +55,7 @@ def unserialize_yield(fun):
 	last_generator: Iterator[Tuple[str, Any]]
 
 	resolver = make_refs_resolver(fun)
+
 	def handler(self: "Serializable", blob: Union[bytes, BytesBuffer] = b"", until: Set[str] = {""}):
 		"""
 		Unserialize this struct from a bytes sequence.
@@ -63,7 +72,7 @@ def unserialize_yield(fun):
 			last_generator = resolver(self).run(blob)
 
 		# Clear what's already been defined
-		until = {key for key in until if not self.keys.contains_quick(key)}
+		until = {key for key in until if key not in self.keys}
 		if until:
 			for key, value in last_generator:
 				if key:
@@ -77,11 +86,17 @@ def unserialize_yield(fun):
 
 		last_position = blob.tell()
 		return self
+
 	resolver.add_to(handler)
 	handler._pack = ("Serializable", 1)
 	return handler
 
+
 class Serializable(Packable):
+	def post_init(self):
+		cp = self.caches["packed"] = BigBlobLinkNode(refresh=self.serialize)
+		self.linkmap[self.link_prefix + "/packed"] = cp
+
 	@serialize
 	def serialize(self, blob: BytesBuffer):
 		raise NotImplementedError(f"{self.__class__.__name__} must implement serialize")
