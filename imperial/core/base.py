@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Callable, ClassVar, Dict, List, Optional, overload, Sequence, Union
-from collections import OrderedDict
+from typing import Any, Callable, ClassVar, Dict, List, Optional, overload, Sequence, Set, Union
+from collections import defaultdict, OrderedDict
 
-from ..magic import BoundReferenceHandler, SpecialRef, NAME, BASIC
-from ..linkmap import LinkNode, StringLinkNode, LinkMap
+from ..magic import SpecialRef, NAME, BASIC
+from ..linkmap import Linkable, LinkNode, StringLinkNode, LinkMap
 from ..exceptions import ImperialKeyError
 
 PythonValue = Union[int, str, list, float, bool, bytes, tuple]
 EitherValue = Union[PythonValue, "ImperialType"]
 
 
-class KeyMap(OrderedDict):
+class KeyMap(OrderedDict[str, Linkable]):
 	"""
 	Storage system for keys and values in a struct.
 	Provides access to key data as well as methods to query the information.
 	"""
 	_owner: ImperialType
+	_reference_staging: Dict[str, Set[ImperialType]]
 
 	def __init__(self, *args, owner: ImperialType):
 		super().__init__(*args)
 		self._owner = owner
+		self._reference_staging = defaultdict(set)
+
+	def __setitem__(self, name: str, value: Linkable):
+		if name in self._reference_staging:
+			value.add_links(self._reference_staging[name])
+			del self._reference_staging[name]
+		super().__setitem__(name, value)
 
 	def __deepcopy__(self, memo):
 		ret = type(self)(owner=None)
@@ -30,6 +38,9 @@ class KeyMap(OrderedDict):
 			OrderedDict.__setitem__(ret, key, deepcopy(value, memo))
 
 		return ret
+
+	def is_ready(self, key: str) -> bool:
+		return OrderedDict.__contains__(self, key)
 
 
 class Meta(type):
@@ -44,6 +55,10 @@ class Meta(type):
 
 
 class ImperialType(metaclass=Meta):
+	# Whether or not get_basic can function for this class under some condition
+	# Override has_special_ref if there are any conditions in order to specify them
+	has_basic: ClassVar[bool] = False
+
 	nocopy: ClassVar[List[str]] = ["clones", "parent", "container", "donor", "linkmap", "caches"]
 	propagated_methods: ClassVar[Dict[str, Callable]] = {}
 
@@ -60,11 +75,13 @@ class ImperialType(metaclass=Meta):
 	donor: ImperialType
 	clones: List[ImperialType]
 
-	# For magic key stuff
-	_ref_handlers: Dict[str, BoundReferenceHandler]
-
 	linkmap: LinkMap
 	caches: Dict[str, LinkNode]
+
+	# Pulled from basic node
+	add_link: Callable[[Linkable], None]
+	add_links: Callable[[Sequence[Linkable]], None]
+	invalidate: Callable[[Optional[Set[int]]], None]
 
 	def __init__(
 		self,
@@ -83,6 +100,8 @@ class ImperialType(metaclass=Meta):
 		parent: What @parent should point to.
 		context: Context that manages this struct
 		container: What this should inherit keys from first.
+			TODO: should this just combine with parent and container can be,
+			you know, what contains this?
 		donor: What this was cloned from.
 		"""
 		self.parent = parent
@@ -103,7 +122,12 @@ class ImperialType(metaclass=Meta):
 		self.caches = {}
 
 		lm[f"{lp}/name"] = self.name = StringLinkNode(name, rigid=True)
-		lm[f"{lp}/basic"] = self.caches["basic"] = LinkNode(refresh=self.resolve_basic)
+
+		if self.has_basic:
+			b = lm[f"{lp}/basic"] = self.caches["basic"] = LinkNode(refresh=self.refresh_basic)
+			self.add_link = b.add_link
+			self.add_links = b.add_links
+			self.invalidate = b.invalidate
 
 		self.post_init()
 
@@ -330,6 +354,13 @@ class ImperialType(metaclass=Meta):
 		"""
 		return self
 
+	def add_links_to_keys(self, keys: Sequence[str], *, invalidates: Linkable):
+		for key in keys:
+			if self.keys.is_ready(key):
+				self.keys[key].add_link(invalidates)
+			else:
+				self.keys._reference_staging[key].add(invalidates)
+
 	def key(self, names: Union[str, Sequence[str]]):
 		"""
 		Get a key's instance from its name.
@@ -359,8 +390,7 @@ class ImperialType(metaclass=Meta):
 			if self.name:
 				return True
 		elif ref is BASIC:
-			# TODO: actually check
-			return True
+			return self.has_basic
 		# If it's not known by us it's not here
 		return False
 

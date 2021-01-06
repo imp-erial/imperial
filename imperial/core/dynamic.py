@@ -193,12 +193,6 @@ class Dynamic(ImperialType):
 			yield parent
 			parent = parent.parent
 
-	def add_link(self, key: str, *, invalidates):
-		pass  # TODO
-
-	def add_links(self, keys: Sequence[str], *, invalidates):
-		pass  # TODO
-
 	def find_inherited(self, name: str) -> Key:
 		aliases = self.localize_key(name)
 		for container in self.containers():

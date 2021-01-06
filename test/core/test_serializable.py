@@ -7,6 +7,8 @@ from imperial.magic import BASIC
 
 
 class PosInt(serializable.Serializable):
+	has_basic = True
+
 	@classmethod
 	def _register(cls):
 		@cls.register
@@ -43,6 +45,8 @@ class PosInt(serializable.Serializable):
 
 
 class Size(PosInt):
+	has_basic = True
+
 	@classmethod
 	def _register(cls):
 		@cls.register
@@ -114,3 +118,7 @@ class TestSerializable(unittest.TestCase):
 
 		pair.unserialize()
 		self.assertEqual(pair.get("right"), 2)
+
+
+if __name__ == "__main__":
+	unittest.main()

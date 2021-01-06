@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Protocol, Set, Sequence
+from typing import Any, Optional, Protocol, Set, Sequence
 from weakref import ref, WeakValueDictionary, WeakSet
-from operator import attrgetter, itemgetter
 from collections import defaultdict
+
+
+class Linkable(Protocol):
+	def add_link(self, origin: Linkable):
+		...
+
+	def add_links(self, origins: Sequence[Linkable]):
+		...
+
+	def invalidate(self, memo: Optional[Set[int]] = None):
+		...
 
 
 class BaseLinkNode:
@@ -18,8 +28,11 @@ class BaseLinkNode:
 		self.references_in: WeakSet[BaseLinkNode] = WeakSet()
 		self.references_out: Set[str] = set()
 
-	def add_link(self, origin):
+	def add_link(self, origin: Linkable):
 		self.links_in.add(origin)
+
+	def add_links(self, origins: Sequence[Linkable]):
+		self.links_in.update(origins)
 
 	def add_reference(self, origin):
 		self.references_in.add(origin)
@@ -27,8 +40,8 @@ class BaseLinkNode:
 	def remove_link(self, origin):
 		self.links_in.remove(origin)
 
-	def remove_references(self, origin):
-		self.references_in.remove(target)
+	def remove_reference(self, origin):
+		self.references_in.remove(origin)
 
 	def set_links_out(self, names: Sequence[str], maps: Sequence[LinkMap]):
 		snames = set(names)
@@ -46,7 +59,7 @@ class BaseLinkNode:
 
 		self.references_out = snames
 
-	def invalidate(self, maps: Sequence[LinkMap], memo: Optional[Set[int]] = None):
+	def invalidate(self, memo: Optional[Set[int]] = None):
 		if not self.rigid:
 			if memo is None:
 				memo = set()
@@ -132,6 +145,12 @@ class LinkMap(WeakValueDictionary[str, BaseLinkNode]):
 		if self.parent is not None:
 			self.parent.remove_references(origin, targets)
 
+	def parents(self):
+		parent = self.parent
+		while parent is not None:
+			yield parent
+			parent = parent.parent
+
 
 class LinkNode(BaseLinkNode):
 	def __init__(self, *value, refresh, **kwargs):
@@ -158,8 +177,12 @@ class LinkNode(BaseLinkNode):
 		if self._value is not value:
 			self._value = value
 			self.valid = True
-			for x in self.connections:
-				x.invalidate()
+
+			memo = {id(self)}
+			for x in self.links_in:
+				x.invalidate(memo)
+			for x in self.references_in:
+				x.invalidate(memo)
 
 
 class StringLinkNode(BaseLinkNode):
@@ -194,8 +217,3 @@ class BigBlobLinkNode(LinkNode):
 			self.valid = True
 			for x in self.connections:
 				x.invalidate()
-
-
-class Linkable(Protocol):
-	name: StringLinkNode
-	caches: Dict[str, LinkNode]

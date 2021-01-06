@@ -5,6 +5,7 @@ from imperial.core import value
 from imperial.core.base import ImperialType, PythonValue
 from imperial.exceptions import ImperialKeyError, ImperialTypeError
 
+
 class Int(value.Value):
 	def normalize(self, value: PythonValue) -> PythonValue:
 		if isinstance(value, Int):
@@ -50,10 +51,6 @@ class TestValuePrimitives(unittest.TestCase):
 
 	def test_set_value_with_primitive(self):
 		i = Int()
-
-		with self.assertRaises(ImperialKeyError):
-			i.resolve("data")
-
 		i.set(1)
 		self.assertIs(i, i.resolve("data"))
 		self.assertEqual(1, i.get())
@@ -71,9 +68,10 @@ class TestValueProxies(unittest.TestCase):
 		self.assertEqual(i.number(), 1)
 		self.assertEqual(i.number("data"), 1)
 
+	# TODO: need reference groups to fix this
 	def test_set_with_redundant_proxy(self):
 		i = Int(Int())
 		i.set(1)
 		self.assertEqual(i.number(), 1)
-		self.assertEqual(i.number("data"), 1)
 		self.assertIsNot(i, i.resolve("data"))
+		self.assertEqual(i.number("data"), 1)

@@ -1,10 +1,8 @@
-import inspect
-from typing import Callable, Dict, Optional, Set, Tuple, Union, TYPE_CHECKING
-from operator import attrgetter
+from __future__ import annotations
 
-from .cache import Cache
-from .linkmap import LinkNode
-from .exceptions import ImperialLibraryError
+import inspect
+from typing import Any, Callable, cast, Dict, Optional, Protocol, Set, Tuple, Union, TYPE_CHECKING
+from operator import attrgetter
 
 if TYPE_CHECKING:
 	from .core.base import ImperialType
@@ -16,7 +14,7 @@ class SpecialRef:
 		self.getter = getter
 
 	def __repr__(self):
-		return f"SpecialRef('{name}')"
+		return f"SpecialRef('{self.name}')"
 
 
 NAME = SpecialRef("name", attrgetter("name"))
@@ -24,6 +22,7 @@ BASIC = SpecialRef("basic", lambda x: x.caches["basic"])
 PACKED = SpecialRef("packed", lambda x: x.caches["packed"])
 
 REF = Union[str, SpecialRef]
+InsConv = Optional[Callable[[Any], "ImperialType"]]
 
 
 def add_help(to: Union[Callable, type], source: Union[Callable, type]):
@@ -31,81 +30,92 @@ def add_help(to: Union[Callable, type], source: Union[Callable, type]):
 	to.__doc__ = source.__doc__
 
 
-def make_refs_resolver(fun: Callable) -> "ReferenceHandler":
-	"""
-	Transform all keyword-only arguments into requests for
-	keys by name. Sets up cache links, too.
-	"""
-	keys = {key: key for key in inspect.getfullargspec(fun).kwonlyargs}
-	return ReferenceHandler(fun, keys)
+class HasContainer(Protocol):
+	container: ImperialType
 
 
-def make_refs_only_resolver(fun: Callable, positional: Tuple[REF] = ()) -> "ReferenceHandler":
-	"""
-	Transform all arguments into requests for
-	keys by name. Sets up cache links, too.
-	"""
-	spec = inspect.getfullargspec(fun)
-	nonself_args = spec.args[1:]
-	keys = dict(zip(positional, nonself_args))
-	for key in (spec.kwonlyargs if keys else nonself_args):
-		keys[key] = key
-	return ReferenceHandler(fun, keys)
+def make_container_resolver(rh: ReferenceHandler) -> Callable:
+	def handler(thing: HasContainer, *args, **kwargs):
+		return rh(thing.container, *args, **kwargs)
+
+	return handler
 
 
 class ReferenceHandler:
 	_fun: Callable
 	_keys: Dict[REF, str]
 	_refs: Set[REF]
+	_to_instance: InsConv
 
-	def __init__(self, fun: Callable, keys: Dict[REF, str]):
+	def __init__(self, fun: Callable, keys: Dict[REF, str], *, to_instance: InsConv = None):
 		self._fun = fun
 		self._keys = keys
 		self._refs = set(keys.keys())
+		self._to_instance = to_instance
 
-	def __call__(self, instance: "ImperialType"):
-		name = self._fun.__name__
-		if name in instance._ref_handlers:
-			return instance._ref_handlers[name]
-		ret = instance._ref_handlers[name] = BoundReferenceHandler(self, instance)
-		return ret
+	@classmethod
+	def from_method_using_args(cls, fun: Callable, *args, positional: Tuple[REF] = (), **kwargs) -> ReferenceHandler:
+		"""
+		Transform all arguments into requests for
+		keys by name. Sets up cache links, too.
+		"""
+		spec = inspect.getfullargspec(fun)
+		nonself_args = spec.args[1:]
+		keys = dict(zip(positional, nonself_args))
+		for key in (spec.kwonlyargs if keys else nonself_args):
+			keys[key] = key
+		return cls(fun, keys, *args, **kwargs)
 
-	def add_to(self, handler):
-		handler._refs = self._refs
+	@classmethod
+	def from_method_using_kwargs(cls, fun: Callable, *args, **kwargs) -> ReferenceHandler:
+		"""
+		Transform all keyword-only arguments into requests for
+		keys by name. Sets up cache links, too.
+		"""
+		keys = {key: key for key in inspect.getfullargspec(fun).kwonlyargs}
+		return cls(fun, keys, *args, **kwargs)
 
-
-class BoundReferenceHandler:
-	_fun: Callable
-	_keys: Dict[REF, str]
-	_refs: Set[REF]
-	_cache: Cache
-	_instance: "ImperialType"
-
-	def __init__(self, base: ReferenceHandler, instance: "ImperialType"):
-		self._fun = base._fun
-		self._keys = base._keys
-		self._refs = base._refs
-
-		self._cache = Cache()
-		self._instance = instance
-
-		for key in self._keys.keys():
-			instance.add_link(key, invalidates=self._cache)
-
-	def run(self, *args, **kwargs):
-		if self._cache.is_valid:
-			return self._cache.value
+	def __call__(self, instance: ImperialType, *args, **kwargs):
 		keyargs = {}
-		instance = self._instance
 		for origin, kwarg in self._keys.items():
 			if isinstance(origin, SpecialRef):
 				# Referencing something of the struct that's not a key
 				keyargs[kwarg] = origin.getter(instance).value
 			elif origin in instance.keys:
-				# TODO: use link map to make this safer?
 				keyargs[kwarg] = instance.keys[origin].resolve()
 			else:
 				return None
-		ret = self._fun(instance, *args, **kwargs, **keyargs)
-		self._cache.cache(ret)
+
+		return self._fun(instance, *args, **kwargs, **keyargs)
+
+	def add_to(self, handler):
+		handler._refs = self._refs
+
+
+class CachingReferenceHandler(ReferenceHandler):
+	_cache_name: str
+
+	def __init__(self, fun: Callable, keys: Dict[REF, str], cache_name: str, **kwargs):
+		super().__init__(fun, keys, **kwargs)
+		self._cache_name = cache_name
+
+	def __call__(self, instance: ImperialType, *args, **kwargs):
+		node = instance.caches[self._cache_name]
+		if node.valid:
+			return node.value
+
+		keyargs = {}
+		for origin, kwarg in self._keys.items():
+			if isinstance(origin, SpecialRef):
+				# Referencing something of the struct that's not a key
+				to_link = origin.getter(instance)
+				keyargs[kwarg] = to_link.value
+				to_link.add_link(node)
+			elif origin in instance.keys:
+				to_link = keyargs[kwarg] = instance.keys[origin].resolve()
+				to_link.add_link(node)
+			else:
+				return None
+
+		node.value = ret = self._fun(instance, *args, **kwargs, **keyargs)
 		return ret

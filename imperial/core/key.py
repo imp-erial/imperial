@@ -1,8 +1,10 @@
-from typing import Any, Callable, ClassVar, List, Optional, overload, Set, Tuple, Type
+from typing import Any, Callable, ClassVar, List, Optional, overload, Sequence, Set, Tuple, Type
+from operator import attrgetter
 from functools import reduce
 
 from .base import ImperialType, EitherValue
-from ..magic import add_help, make_refs_only_resolver
+from ..magic import add_help, make_container_resolver, ReferenceHandler
+from ..linkmap import Linkable, LinkNode
 from ..exceptions import ImperialKeyError, ImperialSanityError
 
 NO_DEFAULT = object()
@@ -21,7 +23,7 @@ class KeyMeta(type):
 				elif getattr(value, "_is_calculation", False):
 					if ret._calculations:
 						ret._calculations.append(value)
-						ret._calc_links = value._refs
+						ret._calc_links.add(value._refs)
 					else:
 						ret._calculations = [value]
 						ret._calc_links = value._refs.copy()
@@ -45,45 +47,57 @@ class Key(metaclass=KeyMeta):
 	_calculations: ClassVar[List[Callable]] = []
 	_calc_links: ClassVar[Set[str]] = set()
 
-	_data: Optional[ImperialType] = None
+	_data: LinkNode
 	defaulted: bool = False
 
 	name: str
 	container: Optional[ImperialType]
 
+	# Pulled from node
+	add_link: Callable[[Linkable], None]
+	add_links: Callable[[Sequence[Linkable]], None]
+	invalidate: Callable[[Optional[Set[int]]], None]
+
 	def __init__(self, data=None, *, name: str = "", container: Optional[ImperialType] = None):
 		self.name = name or self.keyname
 		self.container = container
 
+		self._data = LinkNode(refresh=self._refresh_basic, rigid=data is not None)
+		self.add_link = self._data.add_link
+		self.add_links = self._data.add_links
+		self.invalidate = self._data.invalidate
 		if data is not None:
 			self.set(data)
 
 	@property
 	def data(self):
-		if self._data is None:
-			inherited = self.container.find_inherited(self.name)
-			if inherited is not None:
-				# TODO: Reference
-				self._data = Reference(origin=self, to=inherited)
-			else:
-				is_valid, default = self.get_default()
-				if not is_valid:
-					raise ImperialKeyError(self.name)
-				self._data = default
-				self.defaulted = True
-				self.container.add_links(self._calc_links, invalidates=self)
-		return self._data
+		return self._data.value
 
 	@data.setter
 	def data(self, value: ImperialType):
 		# TODO: type checking, superset casting?
-		self._data = value(container=self.container)
+		self._data.value = value(container=self.container)
 
 	@data.deleter
 	def data(self):
-		self._data = None
+		self._data.invalidate()
 
-	def get_default(self) -> Tuple[bool, Any]:
+	def _refresh_basic(self):
+		inherited = self.container.find_inherited(self.name)
+		if inherited is not None:
+			self._data.set_links_out({inherited}, self.container.linkmap.parents())
+			# TODO: conversions
+			return self.imperialize(inherited())
+		else:
+			is_valid, default = self.get_default()
+			if not is_valid:
+				raise ImperialKeyError(self.name)
+			self._data.value = default
+			self.defaulted = True
+			default.add_links_to_keys(self._calc_links, invalidates=default)
+			return default
+
+	def get_default(self) -> Tuple[bool, ImperialType]:
 		"""
 		Returns the validity of the value and the default value.
 		Only override this in order to produce complex default values.
@@ -168,17 +182,16 @@ def calculate(*args, estimation=False):
 	refs: Tuple[str] = ()
 
 	def wrapper(fun: Callable) -> Callable[[Optional[ImperialType]], Any]:
-		resolver = make_refs_only_resolver(fun, refs)
-
-		def handler(self) -> Any:
-			return resolver(self.container).run()
+		resolver = ReferenceHandler.from_method_using_args(fun, positional=refs)
+		handler = make_container_resolver(resolver)
 
 		if estimation:
 			handler._is_estimation = True
 		else:
 			handler._is_calculation = True
-		resolver.add_to(handler)
+
 		add_help(handler, fun)
+		resolver.add_to(handler)
 		return handler
 
 	if len(args) == 1 and callable(args[0]):

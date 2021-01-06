@@ -2,23 +2,23 @@ from typing import Any, Iterator, Optional, Set, Tuple, Union
 
 from .packable import Packable
 from ..util import BytesBuffer
-from ..magic import make_refs_resolver
+from ..magic import ReferenceHandler, CachingReferenceHandler
 from ..linkmap import BigBlobLinkNode
 
 
 def serialize(fun):
-	resolver = make_refs_resolver(fun)
+	resolver = CachingReferenceHandler.from_method_using_kwargs(fun, "packed")
 
 	def handler(self: "Serializable", *args: BytesBuffer) -> Optional[bytes]:
 		"""
 		Serialize this struct into a bytes sequence.
 		"""
 		if len(args) == 1:
-			resolver(self).run(args[0])
+			resolver(self, args[0])
 			return
 		elif not args:
 			blob = BytesBuffer(bits=self.number(("size", "bits")))
-			resolver(self).run(blob)
+			resolver(self, blob)
 			blob.seek(0)
 			return blob.readall()
 		raise TypeError(f"serialize() takes from 0 to 1 positional arguments but {len(args)} were given")
@@ -29,7 +29,7 @@ def serialize(fun):
 
 
 def unserialize(fun):
-	resolver = make_refs_resolver(fun)
+	resolver = ReferenceHandler.from_method_using_kwargs(fun)
 
 	def handler(self: "Serializable", blob: Union[bytes, BytesBuffer] = b"", until: Set[str] = {""}):
 		"""
@@ -40,7 +40,7 @@ def unserialize(fun):
 
 		if isinstance(blob, bytes):
 			blob = BytesBuffer(blob)
-		value = resolver(self).run(blob)
+		value = resolver(self, blob)
 		self.set(value)
 		return self
 
@@ -54,7 +54,7 @@ def unserialize_yield(fun):
 	last_position: int
 	last_generator: Iterator[Tuple[str, Any]]
 
-	resolver = make_refs_resolver(fun)
+	resolver = ReferenceHandler.from_method_using_kwargs(fun)
 
 	def handler(self: "Serializable", blob: Union[bytes, BytesBuffer] = b"", until: Set[str] = {""}):
 		"""
@@ -69,7 +69,7 @@ def unserialize_yield(fun):
 			blob.seek(last_position)
 		elif isinstance(blob, bytes):
 			last_blob = blob = BytesBuffer(blob)
-			last_generator = resolver(self).run(blob)
+			last_generator = resolver(self, blob)
 
 		# Clear what's already been defined
 		until = {key for key in until if key not in self.keys}
