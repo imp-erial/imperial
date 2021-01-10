@@ -1,10 +1,10 @@
-
-from .key import Key, calculate, estimate
+from .key import Key, estimate
 from .base import PythonValue
 from .value import Value, number
 from .serializable import Serializable, serialize, unserialize
 from ..util import BytesBuffer
-from ..exceptions import ImperialTypeError
+from ..exceptions import ImperialSanityError, ImperialSerializationError, ImperialTypeError
+
 
 class BaseNumber(Value):
 	"""
@@ -12,7 +12,6 @@ class BaseNumber(Value):
 	That is, when they're not packable.
 	However, note that Number does subclass this.
 	"""
-
 	@classmethod
 	def _register(cls):
 		super()._register()
@@ -61,7 +60,6 @@ class Number(BaseNumber, Serializable):
 	"""
 	The fundamental numerical atom.
 	"""
-
 	@serialize
 	def serialize(self, blob: BytesBuffer, *, data, endian, sign):
 		# Whole bytes only
@@ -83,8 +81,8 @@ class Number(BaseNumber, Serializable):
 			raise ImperialSanityError(
 				"{type} {extra.value} is too big for {extra.bytes}",
 				extra={
-					"value": value,
-					"bytes": size.string(),
+				"value": value,
+				"bytes": self.string("size"),
 				},
 			) from None
 

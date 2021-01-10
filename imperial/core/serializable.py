@@ -64,8 +64,10 @@ def unserialize_yield(fun):
 		"""
 		nonlocal last_blob, last_position, last_generator
 		if not blob:
-			# TODO: missing blob on first call handling
-			blob = last_blob
+			try:
+				blob = last_blob
+			except NameError:
+				return
 			blob.seek(last_position)
 		elif isinstance(blob, bytes):
 			last_blob = blob = BytesBuffer(blob)
@@ -73,6 +75,7 @@ def unserialize_yield(fun):
 
 		# Clear what's already been defined
 		until = {key for key in until if key not in self.keys}
+
 		if until:
 			for key, value in last_generator:
 				if key:
@@ -94,6 +97,7 @@ def unserialize_yield(fun):
 
 class Serializable(Packable):
 	def post_init(self):
+		super().post_init()
 		cp = self.caches["packed"] = BigBlobLinkNode(refresh=self.serialize)
 		self.linkmap[self.link_prefix + "/packed"] = cp
 

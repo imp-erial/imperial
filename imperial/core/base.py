@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Callable, ClassVar, Dict, List, Optional, overload, Sequence, Set, Union
+from typing import Any, Callable, cast, ClassVar, Dict, Iterator, List, Optional, overload, Sequence, Set, Union
 from collections import defaultdict, OrderedDict
 
 from ..magic import SpecialRef, NAME, BASIC
@@ -31,7 +31,7 @@ class KeyMap(OrderedDict[str, Linkable]):
 			del self._reference_staging[name]
 		super().__setitem__(name, value)
 
-	def __deepcopy__(self, memo):
+	def __deepcopy__(self, memo: Dict[int, Any]):
 		ret = type(self)(owner=None)
 		memo[id(self)] = ret
 		for key, value in self.items():
@@ -40,12 +40,12 @@ class KeyMap(OrderedDict[str, Linkable]):
 		return ret
 
 	def is_ready(self, key: str) -> bool:
-		return OrderedDict.__contains__(self, key)
+		return super().__contains__(key)
 
 
 class Meta(type):
 	def __new__(cls, name, bases, dct):
-		ret = type.__new__(cls, name, bases, dct)
+		ret = cast("ImperialType", type.__new__(cls, name, bases, dct))
 		for name, prop in dct.items():
 			if callable(prop) and getattr(prop, "_do_propagate", False):
 				if name in ret.propagated_methods:
@@ -114,8 +114,6 @@ class ImperialType(metaclass=Meta):
 		self.donor = donor
 		self.clones = []
 
-		self._ref_handlers = {}
-
 		n = name or str(id(self))
 		lp = self.link_prefix = n if parent is None else parent.link_prefix + "{%s}" % (n, )
 		lm = self.linkmap = LinkMap() if parent is None else self.root.linkmap
@@ -163,9 +161,9 @@ class ImperialType(metaclass=Meta):
 				setattr(new, kw, kwargs[kw])
 
 		if "name" in kwargs:
-			n = name or str(id(self))
-			new.link_prefix = n if parent is None else parent.link_prefix + "{%s}" % (n, )
-			new.name = StringLinkNode(new.link_prefix + "/name", name)
+			n = kwargs["name"] or str(id(self))
+			new.link_prefix = n if kwargs["parent"] is None else kwargs["parent"].link_prefix + "{%s}" % (n, )
+			new.name = StringLinkNode(new.link_prefix + "/name", kwargs["name"])
 
 		return new
 
@@ -316,6 +314,11 @@ class ImperialType(metaclass=Meta):
 		return self.resolve_by_key(name).get()
 
 	def get_basic(self) -> PythonValue:
+		if "basic" in self.caches:
+			return self.caches["basic"].value
+		raise NotImplementedError(f"no basic for {self.__class__.__name__}")
+
+	def refresh_basic(self) -> PythonValue:
 		"""
 		Override this to implement retrieving a basic value for this struct.
 		"""
@@ -415,11 +418,12 @@ class ImperialType(metaclass=Meta):
 		if isinstance(value, ImperialType):
 			return value
 		elif isinstance(value, int):
+			from .number import Number
 			return Number(value)
 		elif isinstance(value, str):
 			t = "string"
 		elif isinstance(value, bytes):
-			return Bin(value)
+			t = "bin"
 		elif isinstance(value, (list, tuple)):
 			t = "list"
 		elif isinstance(value, dict):
@@ -427,6 +431,18 @@ class ImperialType(metaclass=Meta):
 		else:
 			raise ValueError(value)
 		raise NotImplementedError(t)
+
+	def containers(self) -> Iterator[ImperialType]:
+		container = self.container
+		while container is not None:
+			yield container
+			container = container.container
+
+	def parents(self) -> Iterator[ImperialType]:
+		parent = self.parent
+		while parent is not None:
+			yield parent
+			parent = parent.parent
 
 	def __getattr__(self, name: str):
 		if name in self.propagated_methods:

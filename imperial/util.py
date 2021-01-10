@@ -1,12 +1,8 @@
 from io import BufferedIOBase, RawIOBase, SEEK_SET, SEEK_CUR, SEEK_END
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Literal, Optional, Union
 
-try:
-	# only in 3.8
-	from typing import Literal
-	SeekWhence = Literal[SEEK_SET, SEEK_CUR, SEEK_END]
-except ImportError:
-	SeekWhence = int
+SeekWhence = Literal[SEEK_SET, SEEK_CUR, SEEK_END]
+
 
 class DotMap(dict):
 	def __getattr__(self, name: str) -> Any:
@@ -61,7 +57,7 @@ class RawBytesIO(RawIOBase):
 		self._raise_if_closed()
 		start = self._cursor
 		to_write = min(len(b), self._length - start)
-		b[:] = self.blob[start:start+to_write]
+		b[:] = self.blob[start:start + to_write]
 		self._cursor += to_write
 		return to_write
 
@@ -69,7 +65,7 @@ class RawBytesIO(RawIOBase):
 		self._raise_if_closed()
 		start = self._cursor
 		to_write = min(len(b), self._length - start)
-		self.blob[start:start+to_write] = b[:to_write]
+		self.blob[start:start + to_write] = b[:to_write]
 		self._cursor += to_write
 		return to_write
 
@@ -106,6 +102,7 @@ class RawBytesIO(RawIOBase):
 		except AttributeError:
 			pass
 
+
 class BytesBuffer(BufferedIOBase):
 	"""
 	Access bytes from some location in a safe and sane manner.
@@ -124,14 +121,7 @@ class BytesBuffer(BufferedIOBase):
 	isatty: Callable[[], bool]
 	truncate: Callable[[Optional[int]], int]
 
-	def __init__(
-		self,
-		blob: Union[bytes, RawIOBase] = b'',
-		*,
-		base: int = 0,
-		size: int = -1,
-		bits: int = -1
-	):
+	def __init__(self, blob: Union[bytes, RawIOBase] = b'', *, base: int = 0, size: int = -1, bits: int = -1):
 		if base < 0:
 			raise ValueError("base")
 
@@ -143,7 +133,7 @@ class BytesBuffer(BufferedIOBase):
 				bits += size * 8
 			else:
 				bits = size * 8
-		
+
 		if bits < 0:
 			self._unbounded = True
 			if isinstance(blob, bytes):
@@ -158,9 +148,8 @@ class BytesBuffer(BufferedIOBase):
 		else:
 			# TODO: support any granularity
 			if bits % 8:
-				raise ValueError(
-					f"{self.__class__.__name__} currently only supports byte-bounded streams")
-			
+				raise ValueError(f"{self.__class__.__name__} currently only supports byte-bounded streams")
+
 			size = bits // 8
 
 			if isinstance(blob, bytes):

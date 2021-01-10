@@ -1,10 +1,12 @@
-from typing import Callable, ClassVar, Dict, Iterator, List, Optional, Sequence, Type
-from collections import defaultdict, OrderedDict
+from typing import Callable, ClassVar, Dict, List, Optional, Type
+from collections import defaultdict
 
 from .key import Key
 from .base import ImperialType, KeyMap, EitherValue, PythonValue
 from ..util import DotMap
-from ..exceptions import ImperialKeyError
+from ..exceptions import ImperialKeyError, ImperialLibraryError, ImperialTypeError
+
+Converter = Callable[[ImperialType], ImperialType]
 
 
 class DynamicKeyMap(KeyMap):
@@ -62,17 +64,14 @@ class Dynamic(ImperialType):
 	locators: ClassVar[Optional[Dict[str, Key]]] = None
 	_overrides: ClassVar[Optional[Dict[Type[ImperialType], Dict[str, Key]]]] = None
 
+	_converters_to: ClassVar[Dict[Type, Converter]]
+	_converters_from: ClassVar[Dict[Type, Converter]]
+
 	keys: DynamicKeyMap
 
-	def __init__(self, data=None, *, children=(), **kwargs):
-		super().__init__(**kwargs)
+	def post_init(self):
 		self._register()
 		self.keys = DynamicKeyMap(owner=self)
-
-		if data is not None:
-			self.set(data)
-
-		self.add_children(children)
 
 	@classmethod
 	def register(cls, key: Type[Key]) -> Type[Key]:
@@ -124,6 +123,39 @@ class Dynamic(ImperialType):
 
 		return registrar
 
+	@classmethod
+	def register_converter(
+		cls, fun: Optional[Converter] = None, *, source: Optional[Type] = None, target: Optional[Type] = None
+	):
+		"""
+		Register a converter from a source to this or from this to a target.
+		The conversion function must take in an instance of the source type
+		and return a corresponding version of the target type.
+
+		This can be used for simple conversions like string to number or
+		it can be used for more complex conversions like BMP to PNG.
+
+		Currently only meant for reversible conversions.
+		TODO: Support recoverable, lossy, irreversible
+		TODO: Coercion vs conversion?
+		"""
+		if source is not None and target is not None:
+			raise ImperialLibraryError("cannot register a converter with both a source and target")
+		elif source is None and target is None:
+			raise ImperialLibraryError("registering a converter must specify either a source or target")
+
+		def handler(fun: Converter):
+			if target is not None:
+				cls._converters_to[target] = fun
+			elif source is not None:
+				cls._converters_from[source] = fun
+
+		if fun is not None:
+			handler(fun)
+			return
+
+		return handler
+
 	def key_type(self, name: str) -> Type[Key]:
 		"""
 		Get a key's class from its name.
@@ -173,25 +205,32 @@ class Dynamic(ImperialType):
 	@classmethod
 	def normalize(cls, value: EitherValue) -> PythonValue:
 		"""
-		Unify multiple possible basic values into a single basic
-		value or a dict of keys.
+		Unify multiple possible basic values into a single form
+		of basic value or a dict of keys.
 		"""
 		raise NotImplementedError(f"{cls.__name__} must implement normalize")
 
 	def set_by_key(self, name: str, value: EitherValue):
 		self.keys[name].set(value)
 
-	def containers(self) -> Iterator[ImperialType]:
-		container = self.container
-		while container is not None:
-			yield container
-			container = container.container
+	def convert_to(self, type: Type[ImperialType]) -> ImperialType:
+		"""
+		Convert this struct into another struct type.
+		Override this in order to do more generalized conversions.
+		"""
+		if type in self._converters_to:
+			return self._converters_to[type](self)
+		raise ImperialTypeError(f"no conversion from {self.__class__.__name__} to {type.__name__} known")
 
-	def parents(self) -> Iterator[ImperialType]:
-		parent = self.parent
-		while parent is not None:
-			yield parent
-			parent = parent.parent
+	def convert_from(self, data: ImperialType) -> ImperialType:
+		"""
+		Convert another struct into this struct type.
+		Override this in order to do more generalized conversions.
+		"""
+		type_data = type(data)
+		if type_data in self._converters_from:
+			return self._converters_from[type_data](data)
+		return data.convert_to(type(self))
 
 	def find_inherited(self, name: str) -> Key:
 		aliases = self.localize_key(name)

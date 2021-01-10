@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, Set, Sequence
+from typing import Any, Callable, Dict, Optional, Protocol, Set, Sequence
 from weakref import ref, WeakValueDictionary, WeakSet
 from collections import defaultdict
 
@@ -16,65 +16,7 @@ class Linkable(Protocol):
 		...
 
 
-class BaseLinkNode:
-	value: Any = None
-	valid: bool = False
-	rigid: bool
-
-	def __init__(self, *, rigid: bool = False):
-		self.rigid = rigid
-
-		self.links_in: WeakSet[BaseLinkNode] = WeakSet()
-		self.references_in: WeakSet[BaseLinkNode] = WeakSet()
-		self.references_out: Set[str] = set()
-
-	def add_link(self, origin: Linkable):
-		self.links_in.add(origin)
-
-	def add_links(self, origins: Sequence[Linkable]):
-		self.links_in.update(origins)
-
-	def add_reference(self, origin):
-		self.references_in.add(origin)
-
-	def remove_link(self, origin):
-		self.links_in.remove(origin)
-
-	def remove_reference(self, origin):
-		self.references_in.remove(origin)
-
-	def set_links_out(self, names: Sequence[str], maps: Sequence[LinkMap]):
-		snames = set(names)
-		added = snames - self.references_out
-		removed = self.references_out - snames
-
-		if removed:
-			# Clear them out of the targets
-			for lmap in maps:
-				lmap.remove_references(self, removed)
-
-		if added:
-			for lmap in maps:
-				lmap.add_references(self, added)
-
-		self.references_out = snames
-
-	def invalidate(self, memo: Optional[Set[int]] = None):
-		if not self.rigid:
-			if memo is None:
-				memo = set()
-
-			if id(self) not in memo:
-				memo.add(id(self))
-				self.valid = False
-
-				for x in self.links_in:
-					x.invalidate(memo)
-				for x in self.references_in:
-					x.invalidate(memo)
-
-
-class LinkMap(WeakValueDictionary[str, BaseLinkNode]):
+class LinkMap(WeakValueDictionary[str, "BaseLinkNode"]):
 	"""
 	Access the overall link tree and wait for nodes to be created.
 	Keys should be of the form:
@@ -150,6 +92,64 @@ class LinkMap(WeakValueDictionary[str, BaseLinkNode]):
 		while parent is not None:
 			yield parent
 			parent = parent.parent
+
+
+class BaseLinkNode:
+	value: Any = None
+	valid: bool = False
+	rigid: bool
+
+	def __init__(self, *, rigid: bool = False):
+		self.rigid = rigid
+
+		self.links_in: WeakSet[BaseLinkNode] = WeakSet()
+		self.references_in: WeakSet[BaseLinkNode] = WeakSet()
+		self.references_out: Set[str] = set()
+
+	def add_link(self, origin: Linkable):
+		self.links_in.add(origin)
+
+	def add_links(self, origins: Sequence[Linkable]):
+		self.links_in.update(origins)
+
+	def add_reference(self, origin):
+		self.references_in.add(origin)
+
+	def remove_link(self, origin):
+		self.links_in.remove(origin)
+
+	def remove_reference(self, origin):
+		self.references_in.remove(origin)
+
+	def set_links_out(self, names: Sequence[str], maps: Sequence[LinkMap]):
+		snames = set(names)
+		added = snames - self.references_out
+		removed = self.references_out - snames
+
+		if removed:
+			# Clear them out of the targets
+			for lmap in maps:
+				lmap.remove_references(self, removed)
+
+		if added:
+			for lmap in maps:
+				lmap.add_references(self, added)
+
+		self.references_out = snames
+
+	def invalidate(self, memo: Optional[Set[int]] = None):
+		if not self.rigid:
+			if memo is None:
+				memo = set()
+
+			if id(self) not in memo:
+				memo.add(id(self))
+				self.valid = False
+
+				for x in self.links_in:
+					x.invalidate(memo)
+				for x in self.references_in:
+					x.invalidate(memo)
 
 
 class LinkNode(BaseLinkNode):

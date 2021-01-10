@@ -32,6 +32,9 @@ class PosInt(serializable.Serializable):
 	def get_basic(self):
 		return self._data
 
+	def refresh_basic(self):
+		return self._data
+
 	def set_basic(self, value):
 		self._data = self.normalize(value)
 
@@ -55,8 +58,8 @@ class Size(PosInt):
 			keyname = "bits"
 
 			@key.calculate(BASIC)
-			def from_basic(self, basic):
-				return basic.get() * 8
+			def from_basic(self, basic: int):
+				return basic * 8
 
 
 class Pair(serializable.Serializable):

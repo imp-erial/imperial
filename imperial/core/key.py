@@ -41,8 +41,6 @@ class Key(metaclass=KeyMeta):
 	keyname: ClassVar[Optional[str]]
 	default: ClassVar[Any] = NO_DEFAULT
 
-	# TODO: should use some locality manager which can change languages
-	aliases: ClassVar[List[str]] = []
 	_estimations: ClassVar[List[Callable]] = []
 	_calculations: ClassVar[List[Callable]] = []
 	_calc_links: ClassVar[Set[str]] = set()
@@ -86,7 +84,7 @@ class Key(metaclass=KeyMeta):
 		inherited = self.container.find_inherited(self.name)
 		if inherited is not None:
 			self._data.set_links_out({inherited}, self.container.linkmap.parents())
-			# TODO: conversions
+			# TODO: conversions, or is this in the DynamicKeyMap?
 			return self.imperialize(inherited())
 		else:
 			is_valid, default = self.get_default()
