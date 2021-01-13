@@ -160,14 +160,14 @@ class Dynamic(ImperialType):
 		"""
 		Get a key's class from its name.
 		"""
-		if self.context is not None:
-			ctx = type(self.context)
+		if self.manager is not None:
+			ctx = type(self.manager)
 			if ctx in self._overrides:
 				overrides = self._overrides[ctx]
 				if name in overrides:
 					return overrides[name]
-			elif name in self.context.locators:
-				return self.context.locators[name]
+			elif name in self.manager.locators:
+				return self.manager.locators[name]
 		if name in self._keys:
 			return self._keys[name]
 		raise ImperialKeyError(f"{name} of {self}")
@@ -234,12 +234,12 @@ class Dynamic(ImperialType):
 
 	def find_inherited(self, name: str) -> Key:
 		aliases = self.localize_key(name)
-		for container in self.containers():
+		for benefactor in self.benefactors():
 			for n in aliases:
-				if isinstance(container, Dynamic):
-					n = container.key_name_from_localization(n)
-				if n in container.keys:
-					key = container.keys[n]
+				if isinstance(benefactor, Dynamic):
+					n = benefactor.key_name_from_localization(n)
+				if n in benefactor.keys:
+					key = benefactor.keys[n]
 					if not key.hidden and not key.defaulted:
 						return key
 		return None

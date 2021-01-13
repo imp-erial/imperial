@@ -59,28 +59,33 @@ class ImperialType(metaclass=Meta):
 	# Override has_special_ref if there are any conditions in order to specify them
 	has_basic: ClassVar[bool] = False
 
-	nocopy: ClassVar[List[str]] = ["clones", "parent", "container", "donor", "linkmap", "caches"]
+	nocopy: ClassVar[List[str]] = [
+		"propagated_methods", "clones", "_this", "parent", "benefactor", "container", "donor", "manager", "linkmap",
+		"caches"
+	]
 	propagated_methods: ClassVar[Dict[str, Callable]] = {}
 
 	name: LinkNode
 	link_prefix: str
 
+	_this: Optional[ImperialType]
 	parent: Optional[ImperialType]
-	context: Optional[ImperialType]
-	container: Optional[ImperialType]
+	benefactor: Optional[ImperialType]
+	container: Optional[Any]
+	manager: Optional[ImperialType]
 
 	keys: KeyMap
 	children: Dict[str, ImperialType]
 
-	donor: ImperialType
+	donor: Optional[ImperialType]
 	clones: List[ImperialType]
 
 	linkmap: LinkMap
 	caches: Dict[str, LinkNode]
 
 	# Pulled from basic node
-	add_link: Callable[[Linkable], None]
-	add_links: Callable[[Sequence[Linkable]], None]
+	add_link: Callable[[Any], None]
+	add_links: Callable[[Sequence], None]
 	invalidate: Callable[[Optional[Set[int]]], None]
 
 	def __init__(
@@ -90,23 +95,26 @@ class ImperialType(metaclass=Meta):
 		name: Optional[str] = None,
 		source=None,  # TODO: type
 		children: Sequence[ImperialType] = (),
-		hidden: bool = False,
+		this: Optional[ImperialType] = None,
 		parent: Optional[ImperialType] = None,
-		context: Optional[ImperialType] = None,
-		container: Optional[ImperialType] = None,
-		donor: Optional[ImperialType] = None
+		benefactor: Optional[ImperialType] = None,
+		container: Optional[Any] = None,
+		donor: Optional[ImperialType] = None,
+		manager: Optional[ImperialType] = None,
 	):
 		"""
+		this: What @this should point to; None means self.
 		parent: What @parent should point to.
-		context: Context that manages this struct
-		container: What this should inherit keys from first.
-			TODO: should this just combine with parent and container can be,
-			you know, what contains this?
+		benefactor: What this should inherit keys from first.
+		container: Parent in a literal sense. ImperialType or Key.
 		donor: What this was cloned from.
+		manager: The struct which controls this one's locator keys, if any.
 		"""
+		self._this = this
 		self.parent = parent
-		self.context = context
+		self.benefactor = benefactor
 		self.container = container
+		self.manager = manager
 
 		self.keys = KeyMap(owner=self)
 		self.children = OrderedDict()
@@ -156,7 +164,10 @@ class ImperialType(metaclass=Meta):
 		if data is not None:
 			new.set(data)
 
-		for kw in ("source", "children", "hidden", "parent", "container", "donor"):
+		if "this" in kwargs:
+			new._this = kwargs["this"]
+
+		for kw in ("source", "children", "parent", "benefactor", "container", "donor", "manager"):
 			if kw in kwargs:
 				setattr(new, kw, kwargs[kw])
 
@@ -181,6 +192,7 @@ class ImperialType(metaclass=Meta):
 		return new
 
 	def __deepcopy__(self, memo):
+		# Skip calling __init__
 		ret = object.__new__(self.__class__)
 		memo[id(self)] = ret
 		for attr, value in self.__dict__.items():
@@ -199,6 +211,12 @@ class ImperialType(metaclass=Meta):
 		if self.parent is None:
 			return self
 		return self.parent.root
+
+	@property
+	def this(self) -> ImperialType:
+		if self._this is None:
+			return self
+		return self._this
 
 	def get(self, names: Union[None, str, Sequence[str]] = None) -> PythonValue:
 		"""
@@ -432,17 +450,23 @@ class ImperialType(metaclass=Meta):
 			raise ValueError(value)
 		raise NotImplementedError(t)
 
-	def containers(self) -> Iterator[ImperialType]:
-		container = self.container
-		while container is not None:
-			yield container
-			container = container.container
-
 	def parents(self) -> Iterator[ImperialType]:
 		parent = self.parent
 		while parent is not None:
 			yield parent
 			parent = parent.parent
+
+	def benefactors(self) -> Iterator[ImperialType]:
+		benefactor = self.benefactor
+		while benefactor is not None:
+			yield benefactor
+			benefactor = benefactor.container
+
+	def containers(self) -> Iterator[Any]:
+		container = self.container
+		while container is not None:
+			yield container
+			container = container.container
 
 	def __getattr__(self, name: str):
 		if name in self.propagated_methods:

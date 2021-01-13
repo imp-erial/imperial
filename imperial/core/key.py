@@ -4,7 +4,7 @@ from functools import reduce
 
 from .base import ImperialType, EitherValue
 from ..magic import add_help, make_container_resolver, ReferenceHandler
-from ..linkmap import Linkable, LinkNode
+from ..linkmap import LinkNode
 from ..exceptions import ImperialKeyError, ImperialSanityError
 
 NO_DEFAULT = object()
@@ -52,8 +52,8 @@ class Key(metaclass=KeyMeta):
 	container: Optional[ImperialType]
 
 	# Pulled from node
-	add_link: Callable[[Linkable], None]
-	add_links: Callable[[Sequence[Linkable]], None]
+	add_link: Callable[[Any], None]
+	add_links: Callable[[Sequence], None]
 	invalidate: Callable[[Optional[Set[int]]], None]
 
 	def __init__(self, data=None, *, name: str = "", container: Optional[ImperialType] = None):
@@ -74,7 +74,7 @@ class Key(metaclass=KeyMeta):
 	@data.setter
 	def data(self, value: ImperialType):
 		# TODO: type checking, superset casting?
-		self._data.value = value(container=self.container)
+		self._data.value = value(container=self)
 
 	@data.deleter
 	def data(self):
@@ -110,8 +110,8 @@ class Key(metaclass=KeyMeta):
 			pass
 		else:
 			first_value = self.imperialize(res)
-			# TODO: is setting parent here correct?
-			base = self.type(first_value, parent=self.container, container=self.container)
+			# TODO: should this set this, parent, etc?
+			base = self.type(first_value, benefactor=None, container=self)
 			if any(base != x for x in it):
 				raise ImperialSanityError()
 			return True, base

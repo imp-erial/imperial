@@ -6,10 +6,11 @@ from collections import defaultdict
 
 
 class Linkable(Protocol):
-	def add_link(self, origin: Linkable):
+	# TODO: origin/origins should be Linkables, pylance can't handle it tho
+	def add_link(self, origin):
 		...
 
-	def add_links(self, origins: Sequence[Linkable]):
+	def add_links(self, origins: Sequence):
 		...
 
 	def invalidate(self, memo: Optional[Set[int]] = None):
