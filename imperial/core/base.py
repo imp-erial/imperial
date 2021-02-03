@@ -1,47 +1,51 @@
-from copy import deepcopy
-from typing import Callable, ClassVar, Dict, List, Optional, overload, Sequence, Union
-from collections import OrderedDict
+from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any, Callable, cast, ClassVar, Dict, Iterator, List, Optional, overload, Sequence, Set, Union
+from collections import defaultdict, OrderedDict
+
+from ..magic import SpecialRef, NAME, BASIC
+from ..linkmap import Linkable, LinkNode, StringLinkNode, LinkMap
 from ..exceptions import ImperialKeyError
 
-PythonValue = Union[int, str, list]
+PythonValue = Union[int, str, list, float, bool, bytes, tuple]
 EitherValue = Union[PythonValue, "ImperialType"]
 
-class KeyMap(OrderedDict):
+
+class KeyMap(OrderedDict[str, Linkable]):
 	"""
 	Storage system for keys and values in a struct.
 	Provides access to key data as well as methods to query the information.
 	"""
-	def contains(self, name: str, memo: Dict[str, bool]) -> bool:
-		if name in memo:
-			return memo[name]
+	_owner: ImperialType
+	_reference_staging: Dict[str, Set[ImperialType]]
 
-		ret = memo[key] = self.contains_quick(name)
+	def __init__(self, *args, owner: ImperialType):
+		super().__init__(*args)
+		self._owner = owner
+		self._reference_staging = defaultdict(set)
+
+	def __setitem__(self, name: str, value: Linkable):
+		if name in self._reference_staging:
+			value.add_links(self._reference_staging[name])
+			del self._reference_staging[name]
+		super().__setitem__(name, value)
+
+	def __deepcopy__(self, memo: Dict[int, Any]):
+		ret = type(self)(owner=None)
+		memo[id(self)] = ret
+		for key, value in self.items():
+			OrderedDict.__setitem__(ret, key, deepcopy(value, memo))
+
 		return ret
 
-	def contains_quick(self, name: str) -> bool:
-		if self.is_special_ref(name):
-			return self.special_ref_exists_quick(name)
-		return super().__contains__(name)
-
-	def is_special_ref(self, ref: str) -> bool:
-		"""
-		Special refs are references to things that are either
-		not normally able to be referenced or locations that
-		are relative to this location, such as siblings or parents.
-		"""
-		return name.startswith("!") or "." in name
-
-	def special_ref_exists(self, ref: str, memo: Dict[str, bool]) -> bool:
-		pass
-
-	def special_ref_exists_quick(self, ref: str) -> bool:
-		pass
+	def is_ready(self, key: str) -> bool:
+		return super().__contains__(key)
 
 
 class Meta(type):
 	def __new__(cls, name, bases, dct):
-		ret = type.__new__(cls, name, bases, dct)
+		ret = cast("ImperialType", type.__new__(cls, name, bases, dct))
 		for name, prop in dct.items():
 			if callable(prop) and getattr(prop, "_do_propagate", False):
 				if name in ret.propagated_methods:
@@ -51,52 +55,87 @@ class Meta(type):
 
 
 class ImperialType(metaclass=Meta):
-	nocopy: ClassVar[List[str]] = ["clones", "parent", "container", "donor"]
+	# Whether or not get_basic can function for this class under some condition
+	# Override has_special_ref if there are any conditions in order to specify them
+	has_basic: ClassVar[bool] = False
+
+	nocopy: ClassVar[List[str]] = [
+		"propagated_methods", "clones", "_this", "parent", "benefactor", "container", "donor", "manager", "linkmap",
+		"caches"
+	]
 	propagated_methods: ClassVar[Dict[str, Callable]] = {}
 
-	name: Optional[str]
-	parent: Optional["ImperialType"]
-	context: Optional["ImperialType"]
-	container: Optional["ImperialType"]
+	name: LinkNode
+	link_prefix: str
+
+	_this: Optional[ImperialType]
+	parent: Optional[ImperialType]
+	benefactor: Optional[ImperialType]
+	container: Optional[Any]
+	manager: Optional[ImperialType]
 
 	keys: KeyMap
-	children: Dict[str, "ImperialType"]
+	children: Dict[str, ImperialType]
 
-	donor: "ImperialType"
-	clones: List["ImperialType"]
+	donor: Optional[ImperialType]
+	clones: List[ImperialType]
 
-	frozen: bool
+	linkmap: LinkMap
+	caches: Dict[str, LinkNode]
 
-	def __init__(self,
+	# Pulled from basic node
+	add_link: Callable[[Any], None]
+	add_links: Callable[[Sequence], None]
+	invalidate: Callable[[Optional[Set[int]]], None]
+
+	def __init__(
+		self,
 		data=None,
 		*,
 		name: Optional[str] = None,
 		source=None,  # TODO: type
-		children: Sequence["ImperialType"] = (),
-		hidden: bool = False,
-		parent: Optional["ImperialType"] = None,
-		context: Optional["ImperialType"] = None,
-		container: Optional["ImperialType"] = None,
-		donor: Optional["ImperialType"] = None
+		children: Sequence[ImperialType] = (),
+		this: Optional[ImperialType] = None,
+		parent: Optional[ImperialType] = None,
+		benefactor: Optional[ImperialType] = None,
+		container: Optional[Any] = None,
+		donor: Optional[ImperialType] = None,
+		manager: Optional[ImperialType] = None,
 	):
 		"""
+		this: What @this should point to; None means self.
 		parent: What @parent should point to.
-		context: Context that manages this struct
-		container: What this should inherit keys from first.
+		benefactor: What this should inherit keys from first.
+		container: Parent in a literal sense. ImperialType or Key.
 		donor: What this was cloned from.
+		manager: The struct which controls this one's locator keys, if any.
 		"""
-		self.name = name
+		self._this = this
 		self.parent = parent
-		self.context = context
+		self.benefactor = benefactor
 		self.container = container
+		self.manager = manager
 
-		self.keys = KeyMap()
+		self.keys = KeyMap(owner=self)
 		self.children = OrderedDict()
 
 		self.donor = donor
 		self.clones = []
 
-		self.frozen = False
+		n = name or str(id(self))
+		lp = self.link_prefix = n if parent is None else parent.link_prefix + "{%s}" % (n, )
+		lm = self.linkmap = LinkMap() if parent is None else self.root.linkmap
+		self.caches = {}
+
+		lm[f"{lp}/name"] = self.name = StringLinkNode(name, rigid=True)
+
+		if self.has_basic:
+			b = lm[f"{lp}/basic"] = self.caches["basic"] = LinkNode(refresh=self.refresh_basic)
+			self.add_link = b.add_link
+			self.add_links = b.add_links
+			self.invalidate = b.invalidate
+
+		self.post_init()
 
 		if data is not None:
 			self.set(data)
@@ -105,6 +144,12 @@ class ImperialType(metaclass=Meta):
 			self.set_source(source)
 
 		self.add_children(children)
+
+	def post_init(self):
+		"""
+		Override this to hook into __init__ after setup before data assignment.
+		"""
+		pass
 
 	def __call__(self, data=None, **kwargs):
 		"""
@@ -119,12 +164,17 @@ class ImperialType(metaclass=Meta):
 		if data is not None:
 			new.set(data)
 
-		for kw in (
-			"name", "source", "children", "hidden",
-			"parent", "container", "donor"
-		):
+		if "this" in kwargs:
+			new._this = kwargs["this"]
+
+		for kw in ("source", "children", "parent", "benefactor", "container", "donor", "manager"):
 			if kw in kwargs:
 				setattr(new, kw, kwargs[kw])
+
+		if "name" in kwargs:
+			n = kwargs["name"] or str(id(self))
+			new.link_prefix = n if kwargs["parent"] is None else kwargs["parent"].link_prefix + "{%s}" % (n, )
+			new.name = StringLinkNode(new.link_prefix + "/name", kwargs["name"])
 
 		return new
 
@@ -142,15 +192,31 @@ class ImperialType(metaclass=Meta):
 		return new
 
 	def __deepcopy__(self, memo):
+		# Skip calling __init__
 		ret = object.__new__(self.__class__)
 		memo[id(self)] = ret
 		for attr, value in self.__dict__.items():
 			if attr in self.nocopy:
 				setattr(ret, attr, value)
 			else:
-				setattr(ret, attr, deepcopy(value, memo))
+				v = deepcopy(value, memo)
+				if isinstance(v, KeyMap):
+					v._owner = self
+				setattr(ret, attr, v)
 
 		return ret
+
+	@property
+	def root(self) -> ImperialType:
+		if self.parent is None:
+			return self
+		return self.parent.root
+
+	@property
+	def this(self) -> ImperialType:
+		if self._this is None:
+			return self
+		return self._this
 
 	def get(self, names: Union[None, str, Sequence[str]] = None) -> PythonValue:
 		"""
@@ -217,7 +283,7 @@ class ImperialType(metaclass=Meta):
 				if len(names) == 1:
 					names = names[0]
 				elif names:
-					self.resolve(names[:-1]).set_key(names[-1], value)
+					self.resolve(names[:-1]).set_by_key(names[-1], value)
 					return
 			if names:
 				self.set_by_key(names, value)
@@ -230,7 +296,7 @@ class ImperialType(metaclass=Meta):
 			else:
 				self.set_basic(value)
 
-	def resolve(self, names: Union[None, str, Sequence[str]] = None) -> "ImperialType":
+	def resolve(self, names: Union[None, str, Sequence[str]] = None) -> ImperialType:
 		"""
 		Get the ImperialType value of a key.
 
@@ -266,6 +332,11 @@ class ImperialType(metaclass=Meta):
 		return self.resolve_by_key(name).get()
 
 	def get_basic(self) -> PythonValue:
+		if "basic" in self.caches:
+			return self.caches["basic"].value
+		raise NotImplementedError(f"no basic for {self.__class__.__name__}")
+
+	def refresh_basic(self) -> PythonValue:
 		"""
 		Override this to implement retrieving a basic value for this struct.
 		"""
@@ -277,7 +348,7 @@ class ImperialType(metaclass=Meta):
 		the value of a single key.
 		Typically will not need to be overridden.
 		"""
-		self.keys[name] = ImperialType.normalize(value)
+		self.keys[name] = self.normalize(value)
 
 	def set_basic(self, value: EitherValue):
 		"""
@@ -289,7 +360,7 @@ class ImperialType(metaclass=Meta):
 		for key, value in values.items():
 			self.set(key, value)
 
-	def resolve_by_key(self, name: str) -> "ImperialType":
+	def resolve_by_key(self, name: str) -> ImperialType:
 		"""
 		Override this to change the behavior of retrieving
 		the ImperialType value of a single key.
@@ -297,12 +368,19 @@ class ImperialType(metaclass=Meta):
 		"""
 		return self.key(name).data.resolve_basic()
 
-	def resolve_basic(self) -> "ImperialType":
+	def resolve_basic(self) -> ImperialType:
 		"""
 		Only Reference really needs to override this.
 		Typically will not need to be overridden.
 		"""
 		return self
+
+	def add_links_to_keys(self, keys: Sequence[str], *, invalidates: Linkable):
+		for key in keys:
+			if self.keys.is_ready(key):
+				self.keys[key].add_link(invalidates)
+			else:
+				self.keys._reference_staging[key].add(invalidates)
 
 	def key(self, names: Union[str, Sequence[str]]):
 		"""
@@ -321,17 +399,29 @@ class ImperialType(metaclass=Meta):
 
 	def has_keys(self, keys: Sequence[str]) -> bool:
 		for key in keys:
-			if key not in self.keys:
+			if isinstance(key, SpecialRef):
+				if not self.has_special_ref(key):
+					return False
+			elif key not in self.keys:
 				return False
 		return True
 
-	def add_child(self, child: "ImperialType"):
+	def has_special_ref(self, ref: SpecialRef) -> bool:
+		if ref is NAME:
+			if self.name:
+				return True
+		elif ref is BASIC:
+			return self.has_basic
+		# If it's not known by us it's not here
+		return False
+
+	def add_child(self, child: ImperialType):
 		"""
 		Override this in order to support having substructs.
 		"""
 		raise NotImplementedError(f"{self.__class__.__name__} must implement add_child")
 
-	def add_children(self, children: Sequence["ImperialType"]):
+	def add_children(self, children: Sequence[ImperialType]):
 		"""
 		Add multiple substructs at one time.
 		"""
@@ -342,15 +432,16 @@ class ImperialType(metaclass=Meta):
 		raise NotImplementedError("TODO: set_source")
 
 	@classmethod
-	def normalize(cls, value) -> "ImperialType":
+	def imperialize(cls, value) -> ImperialType:
 		if isinstance(value, ImperialType):
 			return value
 		elif isinstance(value, int):
+			from .number import Number
 			return Number(value)
 		elif isinstance(value, str):
 			t = "string"
 		elif isinstance(value, bytes):
-			return Bin(value)
+			t = "bin"
 		elif isinstance(value, (list, tuple)):
 			t = "list"
 		elif isinstance(value, dict):
@@ -358,6 +449,24 @@ class ImperialType(metaclass=Meta):
 		else:
 			raise ValueError(value)
 		raise NotImplementedError(t)
+
+	def parents(self) -> Iterator[ImperialType]:
+		parent = self.parent
+		while parent is not None:
+			yield parent
+			parent = parent.parent
+
+	def benefactors(self) -> Iterator[ImperialType]:
+		benefactor = self.benefactor
+		while benefactor is not None:
+			yield benefactor
+			benefactor = benefactor.container
+
+	def containers(self) -> Iterator[Any]:
+		container = self.container
+		while container is not None:
+			yield container
+			container = container.container
 
 	def __getattr__(self, name: str):
 		if name in self.propagated_methods:

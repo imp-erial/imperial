@@ -1,10 +1,12 @@
-from typing import Callable, ClassVar, Dict, Iterator, List, Optional, Sequence, Type
-from collections import defaultdict, OrderedDict
+from typing import Callable, ClassVar, Dict, List, Optional, Type
+from collections import defaultdict
 
 from .key import Key
-from .base import ImperialType, KeyMap, EitherValue
+from .base import ImperialType, KeyMap, EitherValue, PythonValue
 from ..util import DotMap
-from ..exceptions import ImperialKeyError
+from ..exceptions import ImperialKeyError, ImperialLibraryError, ImperialTypeError
+
+Converter = Callable[[ImperialType], ImperialType]
 
 
 class DynamicKeyMap(KeyMap):
@@ -15,22 +17,11 @@ class DynamicKeyMap(KeyMap):
 	Keys may be inherited, have default values, or come from
 	the result of calculations composed of other, defined keys.
 	"""
-	_owner: Optional["Dynamic"]
-
-	def __init__(self, *args, owner: Optional["Dynamic"] = None):
-		super().__init__(*args)
-		self._owner = owner
-
 	def __getitem__(self, name: str) -> Key:
 		if name in self:
 			return super().__getitem__(name)
 
-		inherited = self.find_inherited(name)
-		if inherited is not None:
-			ref = Reference(to=inherited)
-			ret = self[name] = self._owner._make_key(name, ref)
-		else:
-			ret = self[name] = self._owner._make_key(name)
+		ret = self[name] = self._owner._make_key(name)
 		return ret
 
 	def __setitem__(self, key: str, value: Key):
@@ -47,54 +38,8 @@ class DynamicKeyMap(KeyMap):
 		# TODO: works
 		if super().__contains__(name):
 			return True
-		return self.find_inherited(name) is not None
+		return self._owner.find_inherited(name) is not None
 
-	def contains(self, name: str, memo: Dict[str, bool]) -> bool:
-		"""
-		If you requested self[name], would it return a value?
-		"""
-		# TODO: cache result
-		if name in memo:
-			return memo[name]
-		
-		memo[name] = None
-		
-		if self.is_special_ref(name):
-			ret = memo[name] = self.special_ref_exists(name)
-			return ret
-
-		if super().__contains__(name) or self.find_inherited(name) is not None:
-			return True
-		
-		kt = self._owner.key_type(name)
-		rems: List[set] = []
-		for refs in kt._calc_links:
-			r = {ref for ref in refs if not self.contains_quick(ref)}
-			if r:
-				rems.append(r)
-			else:
-				return True
-		
-		rems.sort(key=len)
-
-		for refs in rems:
-			if all(self.contains(name, memo) for ref in refs):
-				return True
-		return False
-	
-	def find_inherited(self, name: str) -> Key:
-		# TODO: do we want to consider calculated values of parents?
-		aliases = self._owner.localize_key(name)
-		for parent in self._owner.containers():
-			for n in aliases:
-				if isinstance(parent, Dynamic):
-					n = parent.key_name_from_localization(n)
-				if n in parent.keys:
-					key = parent.keys[n]
-					if not key.hidden and not key.defaulted:
-						return key
-		return None
-		
 
 class Dynamic(ImperialType):
 	"""
@@ -103,7 +48,7 @@ class Dynamic(ImperialType):
 	definition. Typically, the data is retrieved from an
 	external source, but it may also be algorithmic, for example.
 
-	In a dynamic struct, keys are implicitely typed, may have
+	In a dynamic struct, keys are implicitly typed, may have
 	defaults, can inherit their values from parent structs, and
 	can have their values calculated from other, defined keys.
 
@@ -119,17 +64,14 @@ class Dynamic(ImperialType):
 	locators: ClassVar[Optional[Dict[str, Key]]] = None
 	_overrides: ClassVar[Optional[Dict[Type[ImperialType], Dict[str, Key]]]] = None
 
+	_converters_to: ClassVar[Dict[Type, Converter]]
+	_converters_from: ClassVar[Dict[Type, Converter]]
+
 	keys: DynamicKeyMap
 
-	def __init__(self, data=None, *, children=(), **kwargs):
-		super().__init__(**kwargs)
+	def post_init(self):
 		self._register()
 		self.keys = DynamicKeyMap(owner=self)
-		
-		if data is not None:
-			self.set(data)
-		
-		self.add_children(children)
 
 	@classmethod
 	def register(cls, key: Type[Key]) -> Type[Key]:
@@ -146,7 +88,7 @@ class Dynamic(ImperialType):
 			cls._keys[key.keyname] = key
 		setattr(cls, key.__name__, key)
 		return key
-	
+
 	@classmethod
 	def register_locator(cls, key: Type[Key]) -> Type[Key]:
 		"""
@@ -178,75 +120,126 @@ class Dynamic(ImperialType):
 				cls._overrides = defaultdict(dict)
 			cls._overrides[context][key.keyname] = key
 			return key
+
 		return registrar
-	
+
+	@classmethod
+	def register_converter(
+		cls, fun: Optional[Converter] = None, *, source: Optional[Type] = None, target: Optional[Type] = None
+	):
+		"""
+		Register a converter from a source to this or from this to a target.
+		The conversion function must take in an instance of the source type
+		and return a corresponding version of the target type.
+
+		This can be used for simple conversions like string to number or
+		it can be used for more complex conversions like BMP to PNG.
+
+		Currently only meant for reversible conversions.
+		TODO: Support recoverable, lossy, irreversible
+		TODO: Coercion vs conversion?
+		"""
+		if source is not None and target is not None:
+			raise ImperialLibraryError("cannot register a converter with both a source and target")
+		elif source is None and target is None:
+			raise ImperialLibraryError("registering a converter must specify either a source or target")
+
+		def handler(fun: Converter):
+			if target is not None:
+				cls._converters_to[target] = fun
+			elif source is not None:
+				cls._converters_from[source] = fun
+
+		if fun is not None:
+			handler(fun)
+			return
+
+		return handler
+
 	def key_type(self, name: str) -> Type[Key]:
 		"""
 		Get a key's class from its name.
 		"""
-		if self.context is not None:
-			ctx = type(self.context)
+		if self.manager is not None:
+			ctx = type(self.manager)
 			if ctx in self._overrides:
 				overrides = self._overrides[ctx]
 				if name in overrides:
 					return overrides[name]
-			elif name in self.context.locators:
-				return self.context.locators[name]
+			elif name in self.manager.locators:
+				return self.manager.locators[name]
 		if name in self._keys:
 			return self._keys[name]
-		raise ImperialKeyError(name)
+		raise ImperialKeyError(f"{name} of {self}")
 
 	def _make_key(self, name: str, data=None) -> Key:
 		return self.key_type(name)(data, name=name, container=self)
-	
+
 	def localize_key(self, name: str) -> List[str]:
 		"""
 		Get all localizations of a key name.
 		"""
 		# TODO: this
 		return [name]
-	
+
 	def key_name_from_localization(self, name: str) -> str:
 		"""
 		Retrieve the internal name of a key from a localized name.
 		"""
 		# TODO: this
 		return name
-	
-	def run_calculations(self, name: str):
+
+	def check_constraints(self, name: Optional[str] = None):
 		"""
 		Run all registered calculations and assert that they have
 		the same result. If the key was unset, set it.
 		Raises ImperialSanityError if they do not.
 		"""
-		if name in self.keys:
-			self.keys[name].run_calculations(self)
-		else:
-			key = self.keys[name] = self._make_key(name)
-			key.run_calculations(self)
+		if name is None:
+			for name in self.keys:
+				self.check_constraints(name)
+			return
+
+		self.keys[name].check_constraints()
 
 	@classmethod
-	def normalize(cls, value) -> ImperialType:
+	def normalize(cls, value: EitherValue) -> PythonValue:
+		"""
+		Unify multiple possible basic values into a single form
+		of basic value or a dict of keys.
+		"""
 		raise NotImplementedError(f"{cls.__name__} must implement normalize")
 
 	def set_by_key(self, name: str, value: EitherValue):
-		# TODO: assert when frozen
-		key = self._make_key(name)
-		key.data = key.type(value)
-		self.keys[name] = key
-	
-	def containers(self) -> Iterator[ImperialType]:
-		container = self.container
-		while container is not None:
-			yield container
-			container = container.container
-	
-	def parents(self) -> Iterator[ImperialType]:
-		parent = self.parent
-		while parent is not None:
-			yield parent
-			parent = parent.parent
-	
-	def add_link(self, key: str, *, invalidates=None):
-		if invalidates is not None:
-			pass  # TODO
+		self.keys[name].set(value)
+
+	def convert_to(self, type: Type[ImperialType]) -> ImperialType:
+		"""
+		Convert this struct into another struct type.
+		Override this in order to do more generalized conversions.
+		"""
+		if type in self._converters_to:
+			return self._converters_to[type](self)
+		raise ImperialTypeError(f"no conversion from {self.__class__.__name__} to {type.__name__} known")
+
+	def convert_from(self, data: ImperialType) -> ImperialType:
+		"""
+		Convert another struct into this struct type.
+		Override this in order to do more generalized conversions.
+		"""
+		type_data = type(data)
+		if type_data in self._converters_from:
+			return self._converters_from[type_data](data)
+		return data.convert_to(type(self))
+
+	def find_inherited(self, name: str) -> Key:
+		aliases = self.localize_key(name)
+		for benefactor in self.benefactors():
+			for n in aliases:
+				if isinstance(benefactor, Dynamic):
+					n = benefactor.key_name_from_localization(n)
+				if n in benefactor.keys:
+					key = benefactor.keys[n]
+					if not key.hidden and not key.defaulted:
+						return key
+		return None

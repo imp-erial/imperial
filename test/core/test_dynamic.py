@@ -3,16 +3,20 @@ import unittest
 from imperial import exceptions
 from imperial.core import base, dynamic, key
 
+
 class Int(base.ImperialType):
 	@classmethod
 	def normalize(cls, value):
+		if isinstance(value, Int):
+			return value._data
 		return int(value)
 
 	def get_basic(self):
 		return self._data
-	
+
 	def set_basic(self, value):
 		self._data = self.normalize(value)
+
 
 class Adder(dynamic.Dynamic):
 	@classmethod
@@ -43,7 +47,7 @@ class Adder(dynamic.Dynamic):
 			@key.calculate
 			def from_b(self, a, b):
 				return a.get() + b.get()
-	
+
 	def get_basic(self):
 		return self.get("data")
 
