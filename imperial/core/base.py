@@ -348,7 +348,7 @@ class ImperialType(metaclass=Meta):
 		the value of a single key.
 		Typically will not need to be overridden.
 		"""
-		self.keys[name] = self.normalize(value)
+		self.keys[name] = self.imperialize(value)
 
 	def set_basic(self, value: EitherValue):
 		"""
