@@ -43,6 +43,8 @@ class RawBytesIO(RawIOBase):
 		self._raise_if_closed()
 		if size == -1:
 			return self.readall()
+		elif size < 0:
+			raise ValueError("size")
 		start = self._cursor
 		end = self._cursor = start + size
 		return bytes(self.blob[start:end])
@@ -72,6 +74,8 @@ class RawBytesIO(RawIOBase):
 	def truncate(self, size: Optional[int] = None) -> int:
 		if size is None:
 			size = self._cursor
+		elif size < 0:
+			raise ValueError("size")
 
 		if size > self._length:
 			self.blob.extend(b'\0' * (size - self._length))
@@ -169,10 +173,14 @@ class BytesBuffer(BufferedIOBase):
 	def read(self, size=-1) -> bytes:
 		if size == -1:
 			return self.readall()
+		elif size < 0:
+			raise ValueError("size")
 		start = self._base + self._cursor
 		self.raw.seek(start)
 		if start + size > self._end:
 			size = self._end - start
+		if size < 0:
+			return b""
 		ret = self.raw.read(size)
 		self._cursor = self.raw.tell() - self._base
 		return ret
